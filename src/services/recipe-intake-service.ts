@@ -1,14 +1,14 @@
-import { matchIngredientToFood } from '../matchers/foodMatcher.js';
-import { parseIngredients } from '../parsers/ingredientParser.js';
-import { scrapeRecipeFromUrl } from '../scrapers/schemaRecipeScraper.js';
+import { matchIngredientToFood } from "../matchers/food-matcher.js";
+import { parseIngredients } from "../parsers/ingredient-parser.js";
+import { scrapeRecipeFromUrl } from "../scrapers/schema-recipe-scraper.js";
 import type {
   FoodLookupItem,
   MatchedIngredient,
   NotionGateway,
   ParsedIngredient,
   RecipeIntakeOptions,
-  RecipeIntakeResponse
-} from '../types.js';
+  RecipeIntakeResponse,
+} from "../types.js";
 
 const mapParsedToMatched = (
   parsed: ParsedIngredient[],
@@ -18,10 +18,12 @@ const mapParsedToMatched = (
   const unmatched: ParsedIngredient[] = [];
 
   for (const ingredient of parsed) {
-    const match = lookup.length ? matchIngredientToFood(ingredient, lookup) : null;
+    const match = lookup.length
+      ? matchIngredientToFood(ingredient, lookup)
+      : null;
     const ingredientWithMatch: MatchedIngredient = {
       ...ingredient,
-      foodId: match?.id ?? null
+      foodId: match?.id ?? null,
     };
 
     matched.push(ingredientWithMatch);
@@ -31,7 +33,7 @@ const mapParsedToMatched = (
         raw: ingredient.raw,
         qty: ingredient.qty,
         unit: ingredient.unit,
-        name: ingredient.name
+        name: ingredient.name,
       });
     }
   }
@@ -64,10 +66,15 @@ export const handleRecipeUrl = async (
     options.foodLookup ??
     (options.notionClient ? await options.notionClient.fetchFoodLookup() : []);
 
-  const { matched, unmatched } = mapParsedToMatched(parsedIngredients, foodLookup);
+  const { matched, unmatched } = mapParsedToMatched(
+    parsedIngredients,
+    foodLookup
+  );
 
   if (options.persistToNotion && options.notionClient) {
-    const recipePageId = await options.notionClient.createRecipePage(scrapeResult.recipe);
+    const recipePageId = await options.notionClient.createRecipePage(
+      scrapeResult.recipe
+    );
     await persistToNotion(options.notionClient, recipePageId, matched);
   }
 
@@ -75,6 +82,6 @@ export const handleRecipeUrl = async (
     recipe: scrapeResult.recipe,
     ingredients: matched,
     unmatched,
-    rawSchema: scrapeResult.rawSchema
+    rawSchema: scrapeResult.rawSchema,
   };
 };

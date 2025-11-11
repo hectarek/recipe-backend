@@ -1,4 +1,4 @@
-import type { FoodLookupItem, ParsedIngredient } from '../types.js';
+import type { FoodLookupItem, ParsedIngredient } from "../types.js";
 
 type IndexedFood = FoodLookupItem & {
   normalizedName: string;
@@ -9,15 +9,15 @@ type IndexedFood = FoodLookupItem & {
 const normalize = (value: string): string =>
   value
     .toLowerCase()
-    .replace(/[\u2019']/g, '')
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[\u2019']/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
 const tokenize = (value: string): Set<string> =>
   new Set(
     normalize(value)
-      .split(' ')
+      .split(" ")
       .filter((token) => token.length > 0)
   );
 
@@ -29,13 +29,15 @@ const buildIndex = (foods: FoodLookupItem[]): IndexedFood[] =>
   foods.map((food) => {
     const normalizedName = normalize(food.name);
     const aliasSet = new Set(
-      (food.aliases ?? []).map((alias) => normalize(alias)).filter((alias) => alias.length > 0)
+      (food.aliases ?? [])
+        .map((alias) => normalize(alias))
+        .filter((alias) => alias.length > 0)
     );
     return {
       ...food,
       normalizedName,
       tokenSet: tokenize(food.name),
-      aliasSet
+      aliasSet,
     };
   });
 
@@ -57,13 +59,19 @@ const bestCandidate = (
       return candidate;
     }
 
-    if (candidate.aliasSet.has(normalizedIngredient) && scoreAliasExact > bestScore) {
+    if (
+      candidate.aliasSet.has(normalizedIngredient) &&
+      scoreAliasExact > bestScore
+    ) {
       bestScore = scoreAliasExact;
       bestMatch = candidate;
       continue;
     }
 
-    if (candidate.normalizedName.startsWith(normalizedIngredient) && scoreStartsWith > bestScore) {
+    if (
+      candidate.normalizedName.startsWith(normalizedIngredient) &&
+      scoreStartsWith > bestScore
+    ) {
       bestScore = scoreStartsWith;
       bestMatch = candidate;
       continue;

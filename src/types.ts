@@ -1,4 +1,4 @@
-import type { scrapeRecipeFromUrl } from './scrapers/schemaRecipeScraper';
+import type { scrapeRecipeFromUrl } from "./scrapers/schema-recipe-scraper.js";
 
 export type ScrapedRecipe = {
   title: string;
@@ -59,11 +59,14 @@ export type RecipeSchemaNode = Record<string, unknown> & {
   cookTime?: unknown;
 };
 
-export interface NotionGateway {
+export type NotionGateway = {
   fetchFoodLookup(): Promise<FoodLookupItem[]>;
   createRecipePage(recipe: ScrapedRecipe): Promise<string>;
-  createIngredientEntries(recipePageId: string, ingredients: MatchedIngredient[]): Promise<void>;
-}
+  createIngredientEntries(
+    recipePageId: string,
+    ingredients: MatchedIngredient[]
+  ): Promise<void>;
+};
 
 export type NotionGatewayOptions = {
   apiToken?: string;
