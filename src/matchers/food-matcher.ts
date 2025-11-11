@@ -1,10 +1,8 @@
-import type { FoodLookupItem, ParsedIngredient } from "../types.js";
-
-type IndexedFood = FoodLookupItem & {
-  normalizedName: string;
-  tokenSet: Set<string>;
-  aliasSet: Set<string>;
-};
+import type {
+  FoodLookupItem,
+  IndexedFood,
+  ParsedIngredient,
+} from "../types.js";
 
 const normalize = (value: string): string =>
   value

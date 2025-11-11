@@ -12,8 +12,7 @@ const jsonResponse = (body: unknown, status = 200): Response =>
   });
 
 const createServer = () => {
-  const portEnv =
-    process.env.PORT ?? process.env.BUN_PORT ?? process.env.NODE_PORT;
+  const portEnv = process.env.PORT;
   const port = portEnv ? Number(portEnv) : undefined;
 
   const server = serve({

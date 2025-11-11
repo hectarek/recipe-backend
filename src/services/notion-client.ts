@@ -8,6 +8,7 @@ import type {
   MatchedIngredient,
   NotionGateway,
   NotionGatewayOptions,
+  RecipePropertyNames,
   ScrapedRecipe,
 } from "../types.js";
 
@@ -27,7 +28,11 @@ const defaultPropertyMappings = {
   recipeName: "Name",
   recipeSourceUrl: "Source URL",
   recipeServings: "Servings",
-  recipeInstructions: "Instructions",
+  recipeInstructions: undefined,
+  recipeTime: "Time",
+  recipeMeal: "Meal",
+  recipeCoverImage: "Cover Image",
+  recipeTags: "Tags",
   ingredientRecipeRelation: "Recipe",
   ingredientFoodRelation: "Food",
   ingredientQuantity: "Qty",
@@ -37,24 +42,381 @@ const defaultPropertyMappings = {
   foodAliases: "Aliases",
 } as const;
 
+const SERVINGS_NUMBER_REGEX = /(\d+(?:\.\d+)?)/;
+const HOURS_TEXT_REGEX = /(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|hr|h)\b/i;
+const MINUTES_TEXT_REGEX = /(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min|m)\b/i;
+const NUMERIC_DURATION_REGEX = /^\d+(?:\.\d+)?$/;
+const ISO_DATE_COMPONENT_REGEX = /(\d+(?:\.\d+)?)([YMWD])/gi;
+const ISO_TIME_COMPONENT_REGEX = /(\d+(?:\.\d+)?)([YMWDHS])/gi;
+const ISO_DATE_TIME_SEPARATOR_REGEX = /[Tt]/;
+const ISO_DATE_DESIGNATOR_MULTIPLIERS: Record<string, number> = {
+  Y: 525_600,
+  M: 43_800,
+  W: 10_080,
+  D: 1440,
+};
+const ISO_TIME_DESIGNATOR_MULTIPLIERS: Record<string, number> = {
+  H: 60,
+  M: 1,
+  S: 1 / 60,
+  D: 1440,
+};
+
+const uniqueStrings = (values: string[] | undefined): string[] => {
+  if (!values?.length) {
+    return [];
+  }
+
+  const set = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed) {
+      set.add(trimmed);
+    }
+  }
+
+  return Array.from(set);
+};
+
+const parseServings = (value: ScrapedRecipe["yield"]): number | null => {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value === "string") {
+    const match = value.match(SERVINGS_NUMBER_REGEX);
+    if (match?.[1]) {
+      const parsed = Number.parseFloat(match[1]);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+  }
+
+  return null;
+};
+
+const parseIsoLikeDurationMinutes = (value: string): number | null => {
+  if (!value || (value[0] !== "P" && value[0] !== "p")) {
+    return null;
+  }
+
+  const [datePartRaw, timePartRaw] = value
+    .slice(1)
+    .split(ISO_DATE_TIME_SEPARATOR_REGEX);
+  let minutes = 0;
+  let hasComponent = false;
+
+  const accumulate = (
+    segment: string | undefined,
+    regex: RegExp,
+    multipliers: Record<string, number>
+  ) => {
+    if (!segment) {
+      return;
+    }
+
+    for (const match of segment.matchAll(regex)) {
+      const amount = Number.parseFloat(match[1] ?? "");
+      const designator = (match[2] ?? "").toUpperCase();
+      const multiplier = multipliers[designator];
+      if (!Number.isFinite(amount) || multiplier === undefined) {
+        continue;
+      }
+      minutes += amount * multiplier;
+      hasComponent = true;
+    }
+  };
+
+  accumulate(
+    datePartRaw,
+    ISO_DATE_COMPONENT_REGEX,
+    ISO_DATE_DESIGNATOR_MULTIPLIERS
+  );
+  accumulate(
+    timePartRaw,
+    ISO_TIME_COMPONENT_REGEX,
+    ISO_TIME_DESIGNATOR_MULTIPLIERS
+  );
+
+  if (!hasComponent) {
+    return null;
+  }
+
+  const rounded = Math.round(minutes);
+  return Number.isFinite(rounded) ? rounded : null;
+};
+
+const parseTextDurationMinutes = (value: string): number | null => {
+  const hoursMatch = value.match(HOURS_TEXT_REGEX);
+  const minutesMatch = value.match(MINUTES_TEXT_REGEX);
+
+  let total = 0;
+
+  if (hoursMatch?.[1]) {
+    total += Number.parseFloat(hoursMatch[1]) * 60;
+  }
+
+  if (minutesMatch?.[1]) {
+    total += Number.parseFloat(minutesMatch[1]);
+  }
+
+  if (total > 0) {
+    return Math.round(total);
+  }
+
+  return null;
+};
+
+const parseDurationMinutes = (value: string | undefined): number | null => {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const isoMinutes = parseIsoLikeDurationMinutes(trimmed);
+  if (isoMinutes !== null) {
+    return isoMinutes;
+  }
+
+  const textMinutes = parseTextDurationMinutes(trimmed);
+  if (textMinutes !== null) {
+    return textMinutes;
+  }
+
+  if (NUMERIC_DURATION_REGEX.test(trimmed)) {
+    const numeric = Number.parseFloat(trimmed);
+    return Number.isFinite(numeric) ? Math.round(numeric) : null;
+  }
+
+  return null;
+};
+
+const formatMinutesLabel = (minutes: number): string => {
+  const positiveMinutes = Math.max(0, Math.round(minutes));
+  if (positiveMinutes === 0) {
+    return "Under 1 min";
+  }
+
+  if (positiveMinutes < 60) {
+    return `${positiveMinutes} min`;
+  }
+
+  const hours = Math.floor(positiveMinutes / 60);
+  const remainder = positiveMinutes % 60;
+
+  if (remainder === 0) {
+    return `${hours} h`;
+  }
+
+  return `${hours} h ${remainder} min`;
+};
+
+const computeTimeMinutes = (
+  time: ScrapedRecipe["time"] | undefined
+): { minutes: number | null; fallback?: string } => {
+  if (!time) {
+    return { minutes: null, fallback: undefined };
+  }
+
+  const totalMinutes = parseDurationMinutes(time.total);
+  if (totalMinutes !== null) {
+    return { minutes: totalMinutes };
+  }
+
+  const prepMinutes = parseDurationMinutes(time.prep);
+  const cookMinutes = parseDurationMinutes(time.cook);
+
+  const combined = (prepMinutes ?? 0) + (cookMinutes ?? 0);
+  if (combined > 0) {
+    return { minutes: combined };
+  }
+
+  if (prepMinutes !== null) {
+    return { minutes: prepMinutes };
+  }
+
+  if (cookMinutes !== null) {
+    return { minutes: cookMinutes };
+  }
+
+  return {
+    minutes: null,
+    fallback: time.total ?? time.prep ?? time.cook ?? undefined,
+  };
+};
+
+const formatRecipeTime = (
+  time: ScrapedRecipe["time"] | undefined
+): string | null => {
+  const { minutes, fallback } = computeTimeMinutes(time);
+
+  if (minutes !== null) {
+    return formatMinutesLabel(minutes);
+  }
+
+  if (!fallback) {
+    return null;
+  }
+
+  const fallbackMinutes = parseDurationMinutes(fallback);
+  if (fallbackMinutes !== null) {
+    return formatMinutesLabel(fallbackMinutes);
+  }
+
+  const trimmed = fallback.trim();
+  return trimmed || null;
+};
+
+const buildInstructionBlocks = (instructions: string | undefined) => {
+  if (!instructions) {
+    return [];
+  }
+
+  return instructions
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => ({
+      object: "block" as const,
+      type: "paragraph" as const,
+      paragraph: {
+        rich_text: [
+          {
+            type: "text" as const,
+            text: { content: line },
+          },
+        ],
+      },
+    }));
+};
+
+const buildRecipeTags = (recipe: ScrapedRecipe): string[] =>
+  uniqueStrings(recipe.cuisines);
+
+const buildRecipeMeals = (recipe: ScrapedRecipe): string[] =>
+  uniqueStrings(recipe.categories);
+
+const buildCoverImageFiles = (
+  imageUrl: string | undefined,
+  title: string
+): Array<{
+  name: string;
+  external: { url: string };
+}> | null => {
+  if (!imageUrl) {
+    return null;
+  }
+
+  const trimmed = imageUrl.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const nameFragment = (() => {
+    try {
+      const url = new URL(trimmed);
+      const pathname = url.pathname.split("/").filter(Boolean).pop();
+      return pathname ?? title;
+    } catch {
+      return title;
+    }
+  })();
+
+  return [
+    {
+      name: nameFragment || title,
+      external: { url: trimmed },
+    },
+  ];
+};
+
+const buildRecipePropertyValues = (
+  recipe: ScrapedRecipe,
+  names: RecipePropertyNames
+): {
+  properties: Record<string, unknown>;
+  coverImageUrl?: string;
+} => {
+  const properties: Record<string, unknown> = {
+    [names.name]: {
+      title: [
+        {
+          text: { content: recipe.title },
+        },
+      ],
+    },
+  };
+
+  if (recipe.sourceUrl && names.sourceUrl) {
+    properties[names.sourceUrl] = {
+      url: recipe.sourceUrl,
+    };
+  }
+
+  const servings = parseServings(recipe.yield);
+  if (servings !== null && names.servings) {
+    properties[names.servings] = {
+      number: servings,
+    };
+  }
+
+  if (recipe.instructions && names.instructions) {
+    properties[names.instructions] = {
+      rich_text: [
+        {
+          text: { content: recipe.instructions },
+        },
+      ],
+    };
+  }
+
+  const formattedTime = formatRecipeTime(recipe.time);
+  if (formattedTime && names.time) {
+    properties[names.time] = {
+      select: {
+        name: formattedTime,
+      },
+    };
+  }
+
+  const recipeMeals = buildRecipeMeals(recipe);
+  if (recipeMeals.length > 0 && names.meal) {
+    properties[names.meal] = {
+      multi_select: recipeMeals.map((meal) => ({
+        name: meal,
+      })),
+    };
+  }
+
+  const recipeTags = buildRecipeTags(recipe);
+  if (recipeTags.length > 0 && names.tags) {
+    properties[names.tags] = {
+      multi_select: recipeTags.map((tag) => ({
+        name: tag,
+      })),
+    };
+  }
+
+  let coverImageUrl: string | undefined;
+  const coverImageFiles = buildCoverImageFiles(recipe.image, recipe.title);
+  if (coverImageFiles) {
+    if (names.coverImage) {
+      properties[names.coverImage] = {
+        files: coverImageFiles,
+      };
+    }
+    coverImageUrl = coverImageFiles[0]?.external.url;
+  }
+
+  return { properties, coverImageUrl };
+};
+
 export class NotionClient implements NotionGateway {
   private readonly client: Client;
   private readonly options: NotionGatewayOptions;
-
-  private get databaseQuery() {
-    return (
-      this.client.databases as unknown as {
-        query: (args: {
-          database_id: string;
-          start_cursor?: string;
-        }) => Promise<{
-          results: Array<PageObjectResponse | PartialPageObjectResponse>;
-          has_more: boolean;
-          next_cursor: string | null;
-        }>;
-      }
-    ).query;
-  }
 
   constructor(options: NotionGatewayOptions) {
     const apiToken = options.apiToken ?? process.env.NOTION_API_TOKEN;
@@ -74,6 +436,45 @@ export class NotionClient implements NotionGateway {
     };
   }
 
+  private queryDatabase(args: {
+    database_id: string;
+    start_cursor?: string;
+  }): Promise<{
+    results: Array<PageObjectResponse | PartialPageObjectResponse>;
+    has_more: boolean;
+    next_cursor: string | null;
+  }> {
+    const databases = this.client.databases as unknown as {
+      query?: (params: {
+        database_id: string;
+        start_cursor?: string;
+      }) => Promise<{
+        results: Array<PageObjectResponse | PartialPageObjectResponse>;
+        has_more: boolean;
+        next_cursor: string | null;
+      }>;
+    };
+
+    if (typeof databases.query === "function") {
+      return databases.query(args);
+    }
+
+    const body: Record<string, unknown> = {};
+    if (args.start_cursor) {
+      body.start_cursor = args.start_cursor;
+    }
+
+    return this.client.request({
+      path: `databases/${args.database_id}/query`,
+      method: "post",
+      body,
+    }) as Promise<{
+      results: Array<PageObjectResponse | PartialPageObjectResponse>;
+      has_more: boolean;
+      next_cursor: string | null;
+    }>;
+  }
+
   async fetchFoodLookup(): Promise<FoodLookupItem[]> {
     if (!this.options.foodDatabaseId) {
       return [];
@@ -83,7 +484,7 @@ export class NotionClient implements NotionGateway {
     let cursor: string | undefined;
 
     do {
-      const response = await this.databaseQuery({
+      const response = await this.queryDatabase({
         database_id: this.options.foodDatabaseId,
         start_cursor: cursor,
       });
@@ -166,49 +567,44 @@ export class NotionClient implements NotionGateway {
       mappings.recipeServings ?? defaultPropertyMappings.recipeServings;
     const recipeInstructionsProperty =
       mappings.recipeInstructions ?? defaultPropertyMappings.recipeInstructions;
+    const recipeTimeProperty =
+      mappings.recipeTime ?? defaultPropertyMappings.recipeTime;
+    const recipeMealProperty =
+      mappings.recipeMeal ?? defaultPropertyMappings.recipeMeal;
+    const recipeCoverImageProperty =
+      mappings.recipeCoverImage ?? defaultPropertyMappings.recipeCoverImage;
+    const recipeTagsProperty =
+      mappings.recipeTags ?? defaultPropertyMappings.recipeTags;
 
-    const properties: Record<string, unknown> = {
-      [recipeNameProperty]: {
-        title: [
-          {
-            text: { content: recipe.title },
-          },
-        ],
-      },
-    };
+    const { properties, coverImageUrl } = buildRecipePropertyValues(recipe, {
+      name: recipeNameProperty,
+      sourceUrl: recipeSourceUrlProperty,
+      servings: recipeServingsProperty,
+      instructions: recipeInstructionsProperty,
+      time: recipeTimeProperty,
+      meal: recipeMealProperty,
+      coverImage: recipeCoverImageProperty,
+      tags: recipeTagsProperty,
+    });
 
-    if (recipe.sourceUrl) {
-      properties[recipeSourceUrlProperty] = {
-        url: recipe.sourceUrl,
-      };
-    }
+    const instructionBlocks = buildInstructionBlocks(recipe.instructions);
 
-    if (recipe.yield) {
-      properties[recipeServingsProperty] = {
-        rich_text: [
-          {
-            text: { content: String(recipe.yield) },
-          },
-        ],
-      };
-    }
-
-    if (recipe.instructions) {
-      properties[recipeInstructionsProperty] = {
-        rich_text: [
-          {
-            text: { content: recipe.instructions },
-          },
-        ],
-      };
-    }
-
-    const response = await this.client.pages.create({
+    const createPayload: Parameters<Client["pages"]["create"]>[0] = {
       parent: { database_id: this.options.recipeDatabaseId },
       properties: properties as Parameters<
         Client["pages"]["create"]
       >[0]["properties"],
-    });
+      ...(instructionBlocks.length ? { children: instructionBlocks } : {}),
+    };
+
+    if (coverImageUrl) {
+      createPayload.cover = {
+        type: "external",
+        external: { url: coverImageUrl },
+      };
+    }
+
+    const response = await this.client.pages.create(createPayload);
 
     if (!isFullPage(response)) {
       throw new Error("Failed to create recipe page in Notion.");

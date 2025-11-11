@@ -253,3 +253,7 @@ Integration
 -   Add macro preview in the response (sum of matched ingredients).
 -   Add a small front-end “review & confirm” page so the user can fix ingredient matches before sending to Notion.
 -   Add support for uploading a raw HTML / pasted recipe instead of URL.
+-   Consider caching the Food Lookup response (in-memory or via Railway KV) so you don’t refetch the entire Notion DB on every intake.
+-   Batch ingredient page creation (e.g., queue + worker) to reduce API chatter for large recipes.
+-   Add runtime metrics/logging around Notion calls to spot rate-limit or validation issues early.
+-   Add an integration test that exercises the Notion client with mocked API responses to guard against future schema mismatches.

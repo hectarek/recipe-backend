@@ -102,7 +102,7 @@ src/
   services/recipe-intake-service.ts
   services/notion-client.ts
 tests/
-  ...                      # Vitest suites (scraper, parser, matcher, service, route)
+  ...                      # Bun test suites (scraper, parser, matcher, service, route)
 ```
 
 ## Deployment (Railway)

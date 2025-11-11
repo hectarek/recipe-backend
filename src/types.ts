@@ -1,5 +1,7 @@
 import type { scrapeRecipeFromUrl } from "./scrapers/schema-recipe-scraper.js";
 
+// Recipe scraping shapes -----------------------------------------------
+
 export type ScrapedRecipe = {
   title: string;
   sourceUrl: string;
@@ -10,33 +12,10 @@ export type ScrapedRecipe = {
     prep?: string;
     cook?: string;
   };
+  categories?: string[];
+  cuisines?: string[];
+  keywords?: string[];
   instructions: string;
-};
-
-export type RawIngredient = string;
-
-export type ParsedIngredient = {
-  raw: string;
-  qty: number | null;
-  unit: string | null;
-  name: string;
-};
-
-export type FoodLookupItem = {
-  id: string;
-  name: string;
-  aliases?: string[];
-};
-
-export type MatchedIngredient = ParsedIngredient & {
-  foodId: string | null;
-};
-
-export type RecipeIntakeResponse = {
-  recipe: ScrapedRecipe;
-  ingredients: MatchedIngredient[];
-  unmatched: ParsedIngredient[];
-  rawSchema?: unknown;
 };
 
 export type RecipeScrapeResult = {
@@ -57,7 +36,50 @@ export type RecipeSchemaNode = Record<string, unknown> & {
   totalTime?: unknown;
   prepTime?: unknown;
   cookTime?: unknown;
+  recipeCategory?: unknown;
+  recipeCuisine?: unknown;
+  keywords?: unknown;
 };
+
+// Ingredient parsing ---------------------------------------------------
+
+export type RawIngredient = string;
+
+export type ParsedIngredient = {
+  raw: string;
+  qty: number | null;
+  unit: string | null;
+  name: string;
+};
+
+// Food lookup & matching -----------------------------------------------
+
+export type FoodLookupItem = {
+  id: string;
+  name: string;
+  aliases?: string[];
+};
+
+export type IndexedFood = FoodLookupItem & {
+  normalizedName: string;
+  tokenSet: Set<string>;
+  aliasSet: Set<string>;
+};
+
+export type MatchedIngredient = ParsedIngredient & {
+  foodId: string | null;
+};
+
+// Service responses ----------------------------------------------------
+
+export type RecipeIntakeResponse = {
+  recipe: ScrapedRecipe;
+  ingredients: MatchedIngredient[];
+  unmatched: ParsedIngredient[];
+  rawSchema?: unknown;
+};
+
+// Notion integration ---------------------------------------------------
 
 export type NotionGateway = {
   fetchFoodLookup(): Promise<FoodLookupItem[]>;
@@ -78,6 +100,10 @@ export type NotionGatewayOptions = {
     recipeSourceUrl?: string;
     recipeServings?: string;
     recipeInstructions?: string;
+    recipeTime?: string;
+    recipeMeal?: string;
+    recipeCoverImage?: string;
+    recipeTags?: string;
     ingredientRecipeRelation?: string;
     ingredientFoodRelation?: string;
     ingredientQuantity?: string;
@@ -87,6 +113,19 @@ export type NotionGatewayOptions = {
     foodAliases?: string;
   };
 };
+
+export type RecipePropertyNames = {
+  name: string;
+  sourceUrl: string;
+  servings?: string;
+  instructions?: string;
+  time?: string;
+  meal?: string;
+  coverImage?: string;
+  tags?: string;
+};
+
+// Service configuration ------------------------------------------------
 
 export type RecipeIntakeOptions = {
   foodLookup?: FoodLookupItem[];

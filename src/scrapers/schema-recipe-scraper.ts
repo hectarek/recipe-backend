@@ -10,6 +10,8 @@ import type {
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0 Safari/537.36";
 
+const COMMA_SEPARATOR_REGEX = /\s*,\s*/;
+
 const recipeTypeMatches = (value: unknown): boolean => {
   if (!value) {
     return false;
@@ -176,6 +178,55 @@ const normalizeTime = (value: unknown): string | undefined => {
   return;
 };
 
+const extractString = (value: unknown): string | undefined => {
+  if (!value) {
+    return;
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (
+    typeof value === "object" &&
+    "name" in (value as Record<string, unknown>) &&
+    typeof (value as Record<string, unknown>).name === "string"
+  ) {
+    return ((value as Record<string, unknown>).name as string) ?? undefined;
+  }
+
+  return;
+};
+
+const normalizeStringArray = (value: unknown): string[] => {
+  if (!value) {
+    return [];
+  }
+
+  const add = (collection: Set<string>, raw: string | undefined) => {
+    const trimmed = raw?.trim();
+    if (trimmed) {
+      collection.add(trimmed);
+    }
+  };
+
+  const result = new Set<string>();
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      add(result, extractString(entry));
+    }
+  } else if (typeof value === "string") {
+    for (const segment of value.split(COMMA_SEPARATOR_REGEX)) {
+      add(result, segment);
+    }
+  } else {
+    add(result, extractString(value));
+  }
+
+  return Array.from(result);
+};
+
 const normalizeIngredients = (value: unknown): RawIngredient[] => {
   if (!value) {
     return [];
@@ -218,6 +269,9 @@ const buildScrapeResult = (
       prep: normalizeTime(schema.prepTime),
       cook: normalizeTime(schema.cookTime),
     },
+    categories: normalizeStringArray(schema.recipeCategory),
+    cuisines: normalizeStringArray(schema.recipeCuisine),
+    keywords: normalizeStringArray(schema.keywords),
     instructions,
   };
 
