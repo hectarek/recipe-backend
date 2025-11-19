@@ -108,7 +108,6 @@ The refresh happens automatically after creating ingredients:
 
 ```typescript
 // After creating all ingredient entries
-await new Promise((resolve) => setTimeout(resolve, 500)); // Wait for Notion
 await this.refreshRecipePage(recipePageId); // Trigger rollup refresh
 ```
 

@@ -163,6 +163,7 @@ export type NotionGatewayOptions = {
     recipeCoverImage?: string;
     recipeTags?: string;
     recipeMissingIngredients?: string;
+    recipeIngredientsRelation?: string;
     ingredientRecipeRelation?: string;
     ingredientFoodRelation?: string;
     ingredientQuantity?: string;

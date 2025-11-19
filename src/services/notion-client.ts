@@ -38,6 +38,7 @@ const defaultPropertyMappings = {
   recipeCoverImage: "Cover Image",
   recipeTags: "Tags",
   recipeMissingIngredients: "Missing Ingredients",
+  recipeIngredientsRelation: "Ingredients",
   ingredientRecipeRelation: "Recipe",
   ingredientFoodRelation: "Food",
   ingredientQuantity: "Qty",
@@ -97,22 +98,44 @@ const buildInstructionBlocks = (instructions: string | undefined) => {
     return [];
   }
 
-  return instructions
+  const instructionLines = instructions
     .split("\n")
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => ({
-      object: "block" as const,
-      type: "paragraph" as const,
-      paragraph: {
-        rich_text: [
-          {
-            type: "text" as const,
-            text: { content: line },
-          },
-        ],
-      },
-    }));
+    .filter(Boolean);
+
+  if (instructionLines.length === 0) {
+    return [];
+  }
+
+  // Create heading block for "Instructions:"
+  const headingBlock = {
+    object: "block" as const,
+    type: "heading_2" as const,
+    heading_2: {
+      rich_text: [
+        {
+          type: "text" as const,
+          text: { content: "Instructions:" },
+        },
+      ],
+    },
+  };
+
+  // Create ordered list items for each instruction
+  const listBlocks = instructionLines.map((line) => ({
+    object: "block" as const,
+    type: "numbered_list_item" as const,
+    numbered_list_item: {
+      rich_text: [
+        {
+          type: "text" as const,
+          text: { content: line },
+        },
+      ],
+    },
+  }));
+
+  return [headingBlock, ...listBlocks];
 };
 
 const buildRecipeTags = (recipe: ScrapedRecipe): string[] =>
@@ -1323,6 +1346,9 @@ export class NotionClient implements NotionGateway {
       ingredients
     );
 
+    // Collect ingredient page IDs as we create them
+    const ingredientPageIds: string[] = [];
+
     for (const ingredient of uniqueIngredients) {
       // Check if ingredient already exists before creating
       const existingId = await this.findExistingIngredient(
@@ -1349,11 +1375,12 @@ export class NotionClient implements NotionGateway {
           },
           "Ingredient entry already exists, skipping creation"
         );
+        ingredientPageIds.push(existingId);
         continue;
       }
 
       try {
-        await this.client.pages.create({
+        const response = await this.client.pages.create({
           parent: { database_id: databaseId },
           properties: this.buildIngredientProperties(
             recipePageId,
@@ -1361,6 +1388,7 @@ export class NotionClient implements NotionGateway {
             resolvedMappings
           ),
         });
+        ingredientPageIds.push(response.id);
       } catch (error) {
         logger.warn(
           {
@@ -1375,11 +1403,106 @@ export class NotionClient implements NotionGateway {
       }
     }
 
+    // Update the recipe page's Ingredients relation property to include all ingredient IDs
+    // This ensures the rollup property updates correctly
+    if (ingredientPageIds.length > 0) {
+      await this.updateRecipeIngredientsRelation(
+        recipePageId,
+        ingredientPageIds
+      );
+    }
+
     // Refresh recipe page to trigger rollup recalculation
     // Notion rollups update automatically, but updating the page ensures they refresh
     // Add a small delay to allow Notion to process the relations first
-    await new Promise((resolve) => setTimeout(resolve, 500));
     await this.refreshRecipePage(recipePageId);
+  }
+
+  /**
+   * Updates the recipe page's Ingredients relation property to include all ingredient page IDs.
+   * This ensures that the rollup property on the recipe page updates correctly.
+   */
+  private async updateRecipeIngredientsRelation(
+    recipePageId: string,
+    ingredientPageIds: string[]
+  ): Promise<void> {
+    try {
+      const mappings = this.options.propertyMappings ?? defaultPropertyMappings;
+      const recipeIngredientsRelationProperty =
+        mappings.recipeIngredientsRelation ??
+        defaultPropertyMappings.recipeIngredientsRelation;
+
+      if (!recipeIngredientsRelationProperty) {
+        logger.debug(
+          { recipePageId },
+          "recipeIngredientsRelation not configured, skipping recipe relation update"
+        );
+        return;
+      }
+
+      // Fetch the recipe page to get current relation values
+      const page = await this.client.pages.retrieve({ page_id: recipePageId });
+      if (!isFullPage(page)) {
+        logger.warn(
+          { recipePageId },
+          "Failed to update recipe ingredients relation: page is not a full page object"
+        );
+        return;
+      }
+
+      const ingredientsProperty =
+        page.properties[recipeIngredientsRelationProperty];
+      if (ingredientsProperty?.type !== "relation") {
+        logger.debug(
+          {
+            recipePageId,
+            recipeIngredientsRelationProperty,
+            propertyType: ingredientsProperty?.type,
+          },
+          "Recipe ingredients property not found or not a relation type, skipping update"
+        );
+        return;
+      }
+
+      // Get existing ingredient IDs from the relation
+      const existingIngredientIds = new Set(
+        ingredientsProperty.relation.map((rel) => rel.id)
+      );
+
+      // Add new ingredient IDs
+      for (const ingredientId of ingredientPageIds) {
+        existingIngredientIds.add(ingredientId);
+      }
+
+      // Update the recipe page with all ingredient IDs
+      await this.client.pages.update({
+        page_id: recipePageId,
+        properties: {
+          [recipeIngredientsRelationProperty]: {
+            relation: Array.from(existingIngredientIds).map((id) => ({
+              id,
+            })),
+          },
+        },
+      });
+
+      logger.debug(
+        {
+          recipePageId,
+          ingredientCount: Array.from(existingIngredientIds).length,
+        },
+        "Updated recipe ingredients relation property"
+      );
+    } catch (error) {
+      // Log warning but don't fail - relations should still work from ingredient side
+      logger.warn(
+        {
+          err: error instanceof Error ? error.message : error,
+          recipePageId,
+        },
+        "Failed to update recipe ingredients relation (relations should still work from ingredient side)"
+      );
+    }
   }
 
   /**
