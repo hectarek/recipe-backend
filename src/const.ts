@@ -75,3 +75,28 @@ export const DESCRIPTORS = [
   "at room temperature",
   "freshly ground",
 ];
+
+export const SERVINGS_NUMBER_REGEX = /(\d+(?:\.\d+)?)/;
+export const HOURS_TEXT_REGEX = /(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|hr|h)\b/i;
+export const MINUTES_TEXT_REGEX =
+  /(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min|m)\b/i;
+export const NUMERIC_DURATION_REGEX = /^\d+(?:\.\d+)?$/;
+export const ISO_DATE_COMPONENT_REGEX = /(\d+(?:\.\d+)?)([YMWD])/gi;
+export const ISO_TIME_COMPONENT_REGEX = /(\d+(?:\.\d+)?)([YMWDHS])/gi;
+export const ISO_DATE_TIME_SEPARATOR_REGEX = /[Tt]/;
+export const DATABASE_ID_HEX_REGEX = /[0-9a-fA-F]{32}/;
+export const COLLECTION_PREFIX_REGEX = /^collection:\/\//i;
+
+export const ISO_DATE_DESIGNATOR_MULTIPLIERS: Record<string, number> = {
+  Y: 525_600,
+  M: 43_800,
+  W: 10_080,
+  D: 1440,
+};
+
+export const ISO_TIME_DESIGNATOR_MULTIPLIERS: Record<string, number> = {
+  H: 60,
+  M: 1,
+  S: 1 / 60,
+  D: 1440,
+};

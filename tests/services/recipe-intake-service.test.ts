@@ -46,6 +46,9 @@ describe("handleRecipeUrl", () => {
     expect(scrapeStub.calls).toEqual(["https://example.com"]);
     expect(result.ingredients).toHaveLength(2);
     expect(result.unmatched).toHaveLength(0);
+    expect(result.matches).toHaveLength(2);
+    expect(result.probables).toHaveLength(0);
+    expect(result.pendingReview).toHaveLength(0);
     const [firstIngredient] = result.ingredients;
     expect(firstIngredient?.foodId).toBe("food-1");
     expect(result.rawSchema).toBeDefined();
@@ -64,5 +67,8 @@ describe("handleRecipeUrl", () => {
       result.ingredients.filter((item) => item.foodId === null)
     ).toHaveLength(2);
     expect(result.unmatched).toHaveLength(2);
+    expect(result.matches).toHaveLength(0);
+    expect(result.probables).toHaveLength(0);
+    expect(result.pendingReview).toHaveLength(2);
   });
 });

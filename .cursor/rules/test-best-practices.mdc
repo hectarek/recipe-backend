@@ -1,0 +1,218 @@
+# Test Best Practices
+
+## Core Principles
+
+1. **Never skip tests** - If something isn't testable, use mocks instead of skipping
+2. **Mock external dependencies** - Don't make real API calls in tests
+3. **Use proper async/await** - Don't use `async` without `await` unless necessary
+4. **Avoid shadowing variables** - Use descriptive names to avoid variable shadowing
+5. **Prefer for...of over forEach** - Better performance and clearer intent
+
+## Common Mistakes to Avoid
+
+### 1. Unnecessary async/await
+
+```typescript
+// ❌ BAD: async without await
+const mockFn = async () => {
+	return value;
+};
+
+// ✅ GOOD: Remove async if no await needed
+const mockFn = () => {
+	return Promise.resolve(value);
+};
+
+// ✅ GOOD: Or use async with await if needed
+const mockFn = async () => {
+	await someAsyncOperation();
+	return value;
+};
+```
+
+### 2. Increment/Decrement Operators
+
+```typescript
+// ❌ BAD: Using ++ operator
+callCount++;
+
+// ✅ GOOD: Use += operator
+callCount += 1;
+```
+
+### 3. Empty Blocks
+
+```typescript
+// ❌ BAD: Empty block
+upsert: async () => {},
+
+// ✅ GOOD: Return Promise.resolve() or add comment
+upsert: () => Promise.resolve(),
+
+// ✅ GOOD: Or add comment if intentional
+upsert: async () => {
+  // Intentionally empty - no-op for testing
+},
+```
+
+### 4. Non-null Assertions
+
+```typescript
+// ❌ BAD: Non-null assertion
+const id = ids[0]!;
+
+// ✅ GOOD: Check for undefined
+const firstId = ids[0];
+if (!firstId) {
+	return Promise.resolve({ records: {} });
+}
+```
+
+### 5. Variable Shadowing
+
+```typescript
+// ❌ BAD: Shadowing outer variable
+const ingredient = (name: string) => ({ name });
+describe("test", () => {
+	it("test", () => {
+		const ingredient = { name: "test" }; // Shadows outer
+	});
+});
+
+// ✅ GOOD: Use descriptive name
+const ingredient = (name: string) => ({ name });
+describe("test", () => {
+	it("test", () => {
+		const testIngredient = { name: "test" };
+	});
+});
+```
+
+### 6. forEach vs for...of
+
+```typescript
+// ❌ BAD: Using forEach
+items.forEach((item) => {
+	expect(item.value).toBeDefined();
+});
+
+// ✅ GOOD: Use for...of
+for (const item of items) {
+	expect(item.value).toBeDefined();
+}
+```
+
+### 7. Type Imports
+
+```typescript
+// ❌ BAD: Importing types from wrong location
+import type { PageObjectResponse } from "../../src/types.js";
+
+// ✅ GOOD: Import from correct package
+import type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints.js";
+```
+
+### 8. Environment Variable Cleanup
+
+```typescript
+// ❌ BAD: Using delete operator
+delete process.env.API_KEY;
+
+// ✅ GOOD: Set to undefined
+process.env.API_KEY = undefined;
+```
+
+### 9. Mock Functions Should Match Interface
+
+```typescript
+// ❌ BAD: Methods don't match interface signature
+class MockGateway {
+	embedIngredient() {
+		// Missing parameter
+		return Promise.resolve(null);
+	}
+}
+
+// ✅ GOOD: Match interface exactly
+class MockGateway {
+	embedIngredient(_ingredient: ParsedIngredient) {
+		return Promise.resolve(null);
+	}
+}
+```
+
+### 10. Promise Rejection vs Throw
+
+```typescript
+// ❌ BAD: Throw in async function
+mockFn: async () => {
+	throw new Error("error");
+};
+
+// ✅ GOOD: Return rejected promise
+mockFn: () => {
+	return Promise.reject(new Error("error"));
+};
+```
+
+### 11. Unused Variables
+
+```typescript
+// ❌ BAD: Unused variable
+const createMock = () => {
+	/* ... */
+};
+
+// ✅ GOOD: Prefix with underscore if intentionally unused
+const _createMock = () => {
+	/* ... */
+};
+```
+
+### 12. Response Type Extensions
+
+```typescript
+// ❌ BAD: Accessing property not in type
+const body = (await res.json()) as RecipeIntakeResponse;
+expect(body.persistedToNotion).toBe(false); // Type error
+
+// ✅ GOOD: Extend type for test
+const body = (await res.json()) as RecipeIntakeResponse & {
+	persistedToNotion?: boolean;
+};
+expect(body.persistedToNotion).toBe(false);
+```
+
+## Test Structure Best Practices
+
+1. **Always restore environment variables** in `afterEach`
+2. **Use descriptive test names** that explain what is being tested
+3. **Mock at the right level** - Mock external APIs, not internal functions
+4. **Test error cases** - Don't just test happy paths
+5. **Use proper TypeScript types** - Don't use `any` or skip type checking
+
+## Example: Proper Test Setup
+
+```typescript
+describe("MyService", () => {
+	let originalEnv: NodeJS.ProcessEnv;
+
+	beforeEach(() => {
+		originalEnv = { ...process.env };
+		process.env.API_KEY = "test-key";
+	});
+
+	afterEach(() => {
+		process.env = originalEnv;
+	});
+
+	it("handles errors gracefully", async () => {
+		const mockService = {
+			call: () => Promise.reject(new Error("API error")),
+		};
+
+		const result = await myService.handle(mockService);
+		expect(result).toBeNull();
+	});
+});
+```

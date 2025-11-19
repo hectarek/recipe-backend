@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { logger } from "../logger.js";
+import { createEmbeddingGateway } from "../services/embedding-gateway.js";
 import { NotionClient } from "../services/notion-client.js";
 import { handleRecipeUrl } from "../services/recipe-intake-service.js";
 import type { FoodLookupItem } from "../types.js";
@@ -18,67 +19,43 @@ const requestSchema = z.object({
   persistToNotion: z.boolean().optional(),
 });
 
-const foodLookupSchema = z.array(
-  z.object({
-    id: z.string(),
-    name: z.string(),
-    aliases: z.array(z.string()).optional(),
-  })
-);
-
-const fetchFoodLookupFromUrl = async (
-  url: string
-): Promise<FoodLookupItem[]> => {
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch food lookup from ${url}. Status: ${response.status}`
-    );
-  }
-
-  const payload = await response.json();
-  const parsed = foodLookupSchema.safeParse(payload);
-
-  if (!parsed.success) {
-    throw new Error("Food lookup payload is invalid.");
-  }
-
-  return parsed.data;
-};
-
-const buildNotionClientIfConfigured = (
-  persistToNotion: boolean,
-  hasProvidedLookup: boolean
-) => {
+const buildNotionClientIfConfigured = (persistToNotion: boolean) => {
   const token = process.env.NOTION_API_TOKEN;
-  const recipeDb = process.env.NOTION_RECIPES_DATABASE_ID;
-  const ingredientDb = process.env.NOTION_INGREDIENTS_DATABASE_ID;
-  const foodDb = process.env.NOTION_FOOD_DATABASE_ID;
+  const recipeDataSource = process.env.NOTION_RECIPES_DATA_SOURCE_ID;
+  const ingredientDataSource = process.env.NOTION_INGREDIENTS_DATA_SOURCE_ID;
+  const foodDataSource = process.env.NOTION_FOOD_DATA_SOURCE_ID;
 
   if (!token) {
+    logger.trace(
+      "Skipping Notion client: NOTION_API_TOKEN is not configured in the environment."
+    );
     return null;
   }
 
   if (persistToNotion) {
-    if (!(recipeDb && ingredientDb)) {
+    if (!(recipeDataSource && ingredientDataSource)) {
+      logger.warn(
+        "persistToNotion=true but NOTION_RECIPES_DATA_SOURCE_ID or NOTION_INGREDIENTS_DATA_SOURCE_ID is missing."
+      );
       return null;
     }
-  } else if (hasProvidedLookup || !foodDb) {
+  } else if (!foodDataSource) {
+    logger.debug(
+      "Skipping Notion food lookup fetch: NOTION_FOOD_DATA_SOURCE_ID is not set."
+    );
     return null;
   }
 
   return new NotionClient({
     apiToken: token,
-    recipeDatabaseId: recipeDb,
-    ingredientDatabaseId: ingredientDb,
-    foodDatabaseId: foodDb,
+    recipeDataSourceId: recipeDataSource,
+    ingredientDataSourceId: ingredientDataSource,
+    foodDataSourceId: foodDataSource,
+    // Database IDs will be automatically resolved from data source IDs
   });
 };
+
+const embeddingGateway = createEmbeddingGateway();
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   new Response(JSON.stringify(body), {
@@ -127,22 +104,6 @@ const parseRequestPayload = async (
   }
 };
 
-const fetchFoodLookupFromEnvironment = async (): Promise<FoodLookupItem[]> => {
-  if (!process.env.FOOD_LOOKUP_URL) {
-    return [];
-  }
-
-  try {
-    return await fetchFoodLookupFromUrl(process.env.FOOD_LOOKUP_URL);
-  } catch (error) {
-    logger.warn(
-      { err: error },
-      "Unable to fetch food lookup from FOOD_LOOKUP_URL. Continuing without matches."
-    );
-    return [];
-  }
-};
-
 type LookupPreparationResult =
   | { ok: true; lookup: FoodLookupItem[]; notionClient: NotionClient | null }
   | { ok: false; response: Response };
@@ -151,16 +112,7 @@ const prepareFoodLookup = async (
   providedLookup: FoodLookupItem[] | undefined,
   persistToNotion: boolean
 ): Promise<LookupPreparationResult> => {
-  let lookup = providedLookup ?? [];
-
-  if (!lookup.length) {
-    lookup = await fetchFoodLookupFromEnvironment();
-  }
-
-  const notionClient = buildNotionClientIfConfigured(
-    persistToNotion,
-    lookup.length > 0
-  );
+  const notionClient = buildNotionClientIfConfigured(persistToNotion);
 
   if (persistToNotion && !notionClient) {
     return {
@@ -168,22 +120,47 @@ const prepareFoodLookup = async (
       response: jsonResponse(
         {
           error:
-            "persistToNotion=true requires NOTION_API_TOKEN, NOTION_RECIPES_DATABASE_ID, and NOTION_INGREDIENTS_DATABASE_ID environment variables.",
+            "persistToNotion=true requires NOTION_API_TOKEN, NOTION_RECIPES_DATA_SOURCE_ID, and NOTION_INGREDIENTS_DATA_SOURCE_ID environment variables.",
         },
         400
       ),
     };
   }
 
+  let lookup = providedLookup ?? [];
+
+  if (lookup.length) {
+    logger.info(
+      { providedCount: lookup.length },
+      "Using provided food lookup from request body."
+    );
+  }
+
   if (!lookup.length && notionClient) {
     try {
+      logger.debug(
+        {
+          dataSourceId: process.env.NOTION_FOOD_DATA_SOURCE_ID,
+        },
+        "Attempting to fetch food lookup from Notion."
+      );
       lookup = await notionClient.fetchFoodLookup();
+      logger.info(
+        { lookupCount: lookup.length },
+        "Fetched food lookup from Notion"
+      );
     } catch (error) {
       logger.warn(
         { err: error },
         "Failed to fetch food lookup via Notion. Continuing without matches."
       );
     }
+  }
+
+  if (!lookup.length) {
+    logger.warn(
+      "Food lookup is empty after preparation. Matching will proceed without semantic suggestions."
+    );
   }
 
   return { ok: true, lookup, notionClient };
@@ -219,6 +196,7 @@ export const createScrapeRecipeHandler =
         foodLookup: lookup,
         notionClient: notionClient ?? undefined,
         persistToNotion: persistToNotion && !!notionClient,
+        embeddingGateway: embeddingGateway ?? undefined,
       });
 
       return jsonResponse({

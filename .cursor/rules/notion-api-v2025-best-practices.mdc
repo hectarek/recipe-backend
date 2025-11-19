@@ -1,0 +1,308 @@
+---
+description: Notion API v2025+ best practices - data sources, database resolution, and patterns
+globs: "**/notion*.ts, **/*notion*.ts, **/services/notion*.ts"
+alwaysApply: true
+---
+
+# Notion API v2025+ Best Practices
+
+## Core Principle: Use Data Sources, Not Direct Database Access
+
+**Always use `NOTION_FOOD_DATA_SOURCE_ID` (or similar data source IDs) for reading from Notion databases.** Data sources are the modern way to access synced databases in Notion API v2025+.
+
+## Reading from Notion (Query Operations)
+
+### Use `client.dataSources.query()` for Reading
+
+```typescript
+// ✅ CORRECT: Use dataSources.query() for reading
+const response = await this.client.dataSources.query({
+	data_source_id: dataSourceId,
+	start_cursor: cursor,
+});
+
+// ❌ WRONG: Don't use databases.query() directly if you have a data source ID
+const response = await this.client.databases.query({
+	database_id: databaseId,
+	// ...
+});
+```
+
+### Data Source ID Resolution Pattern
+
+Always normalize and cache data source IDs:
+
+```typescript
+private cachedFoodDataSourceId?: string | null;
+
+private resolveFoodDataSourceId(): string | null {
+  if (this.cachedFoodDataSourceId !== undefined) {
+    return this.cachedFoodDataSourceId;
+  }
+
+  const { foodDataSourceId } = this.options;
+  if (!foodDataSourceId) {
+    this.cachedFoodDataSourceId = null;
+    return null;
+  }
+
+  const normalized = normalizeDatabaseIdForUrl(foodDataSourceId);
+  this.cachedFoodDataSourceId = normalized;
+  return normalized;
+}
+```
+
+## Writing to Notion (Create/Update Operations)
+
+### Resolve Database ID from Data Source
+
+**For write operations, you MUST resolve the database ID from the data source.** Data sources are read-only views; writes require the underlying database ID.
+
+```typescript
+private cachedFoodDatabaseId?: string | null;
+
+private async resolveFoodDatabaseId(): Promise<string | null> {
+  // If explicitly provided (fallback), use it
+  if (this.options.foodDatabaseId) {
+    return this.options.foodDatabaseId;
+  }
+
+  // If already cached, return cached value
+  if (this.cachedFoodDatabaseId !== undefined) {
+    return this.cachedFoodDatabaseId;
+  }
+
+  // Resolve database ID from data source by querying one page
+  const dataSourceId = this.resolveFoodDataSourceId();
+  if (!dataSourceId) {
+    this.cachedFoodDatabaseId = null;
+    return null;
+  }
+
+  try {
+    const response = await this.client.dataSources.query({
+      data_source_id: dataSourceId,
+      start_cursor: undefined,
+    });
+
+    // Get the database ID from the first page's parent
+    const firstPage = response.results[0];
+    if (firstPage && isFullPage(firstPage)) {
+      const parent = firstPage.parent;
+      if (parent && "type" in parent && parent.type === "database_id") {
+        const databaseId = parent.database_id;
+        this.cachedFoodDatabaseId = databaseId;
+        return databaseId;
+      }
+    }
+
+    this.cachedFoodDatabaseId = null;
+    return null;
+  } catch (error) {
+    logger.warn({ err: error, dataSourceId }, "Failed to resolve database ID from data source");
+    this.cachedFoodDatabaseId = null;
+    return null;
+  }
+}
+```
+
+### Use Resolved Database ID for Writes
+
+```typescript
+// ✅ CORRECT: Resolve database ID, then use for writes
+async createFoodEntry(name: string): Promise<string> {
+  const databaseId = await this.resolveFoodDatabaseId();
+  if (!databaseId) {
+    throw new Error("Database ID could not be resolved from data source");
+  }
+
+  await this.client.pages.create({
+    parent: { database_id: databaseId },
+    properties: { /* ... */ },
+  });
+}
+
+// ❌ WRONG: Don't require foodDatabaseId in constructor/options
+// The database ID should be resolved automatically from the data source
+```
+
+## Querying with Filters
+
+### Use `databases.query()` for Filtered Queries
+
+While data sources are preferred for reading, **filtered queries require `databases.query()`**:
+
+```typescript
+// ✅ CORRECT: Use databases.query() for filtered queries
+const databaseId = await this.resolveFoodDatabaseId();
+const response = await this.client.databases.query({
+	database_id: databaseId,
+	filter: {
+		property: "Name",
+		title: { equals: name },
+	},
+	page_size: 1,
+});
+```
+
+## Duplicate Prevention Pattern
+
+### Always Check for Duplicates Before Creating
+
+```typescript
+async createFoodEntry(name: string, aliases?: string[]): Promise<string> {
+  const databaseId = await this.resolveFoodDatabaseId();
+  if (!databaseId) {
+    throw new Error("Database ID could not be resolved");
+  }
+
+  // ✅ ALWAYS check for duplicates first
+  const existingId = await this.findFoodByName(name);
+  if (existingId) {
+    logger.info({ foodPageId: existingId, name }, "Entry already exists");
+    return existingId;
+  }
+
+  // Create new entry...
+}
+```
+
+### Duplicate Detection Methods
+
+-   **Recipes**: Check by `sourceUrl` (unique identifier)
+-   **Foods**: Check by exact `name` match
+-   Always return existing ID if found, don't create duplicates
+
+## Filtering Pattern: "Reviewed" Checkbox
+
+### Only Include Reviewed Items in Lookups
+
+When fetching lookup data, filter out items that haven't been reviewed:
+
+```typescript
+private mapFoodPage(page: PageObjectResponse): FoodLookupItem | null {
+  // ... extract name and other properties ...
+
+  // ✅ Check Reviewed status - only include items that are reviewed (checked)
+  const reviewedProperty = properties[reviewedPropertyKey];
+  if (reviewedProperty?.type === "checkbox") {
+    const isReviewed = reviewedProperty.checkbox;
+    if (!isReviewed) {
+      logger.trace({ pageId: page.id, name }, "Item not reviewed, skipping");
+      return null; // Exclude from lookup
+    }
+  }
+
+  // Return item only if reviewed
+  return { id: page.id, name, aliases };
+}
+```
+
+### Create New Entries with Reviewed=false
+
+When creating new entries, always set `Reviewed` to `false`:
+
+```typescript
+const properties: Record<string, unknown> = {
+	[foodNameProperty]: { title: [{ text: { content: name } }] },
+	[foodReviewedProperty]: {
+		checkbox: false, // ✅ Always unchecked for new entries
+	},
+};
+```
+
+## Environment Variables Pattern
+
+### Only Require Data Source IDs
+
+**Never require both `NOTION_FOOD_DATA_SOURCE_ID` and `NOTION_FOOD_DATABASE_ID`.** Only require the data source ID:
+
+```typescript
+// ✅ CORRECT: Only require data source ID
+const foodDataSource = process.env.NOTION_FOOD_DATA_SOURCE_ID;
+
+return new NotionClient({
+	foodDataSourceId: foodDataSource,
+	// Database ID will be resolved automatically
+});
+
+// ❌ WRONG: Don't require both
+const foodDatabase = process.env.NOTION_FOOD_DATABASE_ID; // Not needed!
+```
+
+## Error Handling Patterns
+
+### Graceful Degradation
+
+Always handle missing data sources gracefully:
+
+```typescript
+async fetchFoodLookup(): Promise<FoodLookupItem[]> {
+  if (!this.options.foodDataSourceId) {
+    logger.debug("foodDataSourceId not configured, returning empty list");
+    return []; // ✅ Return empty array, don't throw
+  }
+
+  const dataSourceId = this.resolveFoodDataSourceId();
+  if (!dataSourceId) {
+    logger.warn("Failed to resolve data source ID");
+    return []; // ✅ Return empty array, don't throw
+  }
+
+  // ... fetch logic ...
+}
+```
+
+### Logging Levels
+
+-   **`trace`**: Detailed debugging (data source resolution, filtering decisions)
+-   **`debug`**: Important state changes (resolved IDs, batch sizes)
+-   **`info`**: High-level operations (created entries, found duplicates)
+-   **`warn`**: Recoverable errors (failed resolutions, missing properties)
+-   **`error`**: Critical failures (API errors, validation failures)
+
+## Type Safety Patterns
+
+### Use Type Assertions for Outdated SDK Types
+
+The Notion SDK types may be outdated. Use type assertions when necessary:
+
+```typescript
+// ✅ CORRECT: Type assertion for databases.query() if SDK types are outdated
+const response = await(
+	this.client.databases as unknown as {
+		query: (args: { database_id: string; filter: { property: string; title: { equals: string } }; page_size: number }) => Promise<{
+			results: Array<PageObjectResponse | PartialPageObjectResponse>;
+		}>;
+	}
+).query({
+	database_id: databaseId,
+	filter: {
+		/* ... */
+	},
+	page_size: 1,
+});
+```
+
+## Summary Checklist
+
+When working with Notion API:
+
+-   [ ] Use `dataSources.query()` for reading operations
+-   [ ] Resolve database ID from data source for write operations
+-   [ ] Cache resolved IDs to avoid repeated API calls
+-   [ ] Always check for duplicates before creating entries
+-   [ ] Filter lookup results by "Reviewed" status
+-   [ ] Set "Reviewed" to `false` when creating new entries
+-   [ ] Only require data source IDs in environment variables
+-   [ ] Use appropriate logging levels
+-   [ ] Handle errors gracefully (return empty arrays, don't throw)
+-   [ ] Use type assertions if SDK types are outdated
+
+## Key Takeaways
+
+1. **Data sources are read-only views** - use them for reading, resolve database ID for writing
+2. **Always prevent duplicates** - check before creating
+3. **Review workflow** - new entries are unchecked, only reviewed items appear in lookups
+4. **Minimal configuration** - only require data source IDs, resolve database IDs automatically
+5. **Graceful degradation** - return empty arrays instead of throwing errors when data sources aren't configured

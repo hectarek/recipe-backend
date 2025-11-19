@@ -1,4 +1,5 @@
-import { DESCRIPTORS, UNICODE_FRACTIONS, UNIT_ALIASES } from "../const.js";
+import { UNICODE_FRACTIONS, UNIT_ALIASES } from "../const.js";
+import { normalizeIngredientName } from "../normalizers/ingredient-normalizer.js";
 import type { ParsedIngredient, RawIngredient } from "../types.js";
 
 const MULTISPACE_REGEX = /\s+/g;
@@ -9,9 +10,6 @@ const MIXED_FRACTION_REGEX = /^(\d+)\s+(\d+\/\d+)/;
 const SIMPLE_FRACTION_REGEX = /^(\d+\/\d+)/;
 const RANGE_REGEX = /^(\d+(?:\.\d+)?)\s*[-–]\s*(\d+(?:\.\d+)?)/;
 const NUMBER_REGEX = /^(\d+(?:\.\d+)?)/;
-const LEADING_OF_REGEX = /^of\s+/i;
-const EXCESS_SPACE_REGEX = /\s{2,}/g;
-const TRAILING_COMMA_REGEX = /,\s*$/;
 
 const fractionStringToNumber = (input: string): number | null => {
   if (!input) {
@@ -148,21 +146,6 @@ const matchUnit = (
   return { unit: null, remainingTokens: tokens };
 };
 
-const cleanIngredientName = (input: string): string => {
-  let result = input.trim();
-
-  for (const descriptor of DESCRIPTORS) {
-    const descriptorPattern = new RegExp(`\\b${descriptor}\\b`, "gi");
-    result = result.replace(descriptorPattern, "").trim();
-  }
-
-  result = result.replace(LEADING_OF_REGEX, "").trim();
-  result = result.replace(EXCESS_SPACE_REGEX, " ");
-  result = result.replace(TRAILING_COMMA_REGEX, "").trim();
-
-  return result;
-};
-
 export const parseIngredient = (line: RawIngredient): ParsedIngredient => {
   const normalized = normalizeWhitespace(line);
 
@@ -180,13 +163,20 @@ export const parseIngredient = (line: RawIngredient): ParsedIngredient => {
   const { unit, remainingTokens } = matchUnit(tokens);
 
   const remainder = remainingTokens.join(" ");
-  const cleanedName = cleanIngredientName(remainder || rest);
+  const normalizedName = normalizeIngredientName(remainder || rest);
+  const baseName = normalizedName.baseName || line.trim();
 
   return {
     raw: line,
     qty: quantity,
     unit,
-    name: cleanedName || line.trim(),
+    name: baseName,
+    descriptors:
+      normalizedName.descriptors.length > 0
+        ? normalizedName.descriptors
+        : undefined,
+    normalizedTokens:
+      normalizedName.tokens.length > 0 ? normalizedName.tokens : undefined,
   };
 };
 

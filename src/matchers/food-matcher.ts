@@ -1,101 +1,88 @@
+import { normalizeIngredientName } from "../normalizers/ingredient-normalizer.js";
+import type { EmbeddingCache } from "../services/embedding-gateway.js";
 import type {
   FoodLookupItem,
+  FoodMatchCandidate,
   IndexedFood,
   ParsedIngredient,
 } from "../types.js";
-
-const normalize = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[\u2019']/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const tokenize = (value: string): Set<string> =>
-  new Set(
-    normalize(value)
-      .split(" ")
-      .filter((token) => token.length > 0)
-  );
-
-const scoreAliasExact = 90;
-const scoreStartsWith = 75;
-const scoreTokenMatch = 60;
+import { scoreCandidate } from "./scoring.js";
 
 const buildIndex = (foods: FoodLookupItem[]): IndexedFood[] =>
   foods.map((food) => {
-    const normalizedName = normalize(food.name);
-    const aliasSet = new Set(
-      (food.aliases ?? [])
-        .map((alias) => normalize(alias))
-        .filter((alias) => alias.length > 0)
+    const normalizedNameData = normalizeIngredientName(food.name);
+    const baseName =
+      normalizedNameData.baseName || food.name.toLowerCase().trim();
+    const tokenSet = new Set(
+      normalizedNameData.tokens.length > 0
+        ? normalizedNameData.tokens
+        : baseName.split(" ").filter((token) => token.length > 0)
     );
+
+    const aliasBaseNames: string[] = [];
+    const aliasTokenSets: Set<string>[] = [];
+
+    for (const alias of food.aliases ?? []) {
+      const normalizedAlias = normalizeIngredientName(alias);
+      if (normalizedAlias.baseName) {
+        aliasBaseNames.push(normalizedAlias.baseName);
+      }
+      if (normalizedAlias.tokens.length > 0) {
+        aliasTokenSets.push(new Set(normalizedAlias.tokens));
+      }
+    }
+
     return {
       ...food,
-      normalizedName,
-      tokenSet: tokenize(food.name),
-      aliasSet,
+      normalizedName: baseName,
+      tokenSet,
+      aliasSet: new Set(aliasBaseNames),
+      aliasTokenSets,
     };
   });
 
-const bestCandidate = (
-  ingredient: ParsedIngredient,
-  indexedFoods: IndexedFood[]
-): FoodLookupItem | null => {
-  const normalizedIngredient = normalize(ingredient.name);
-  if (!normalizedIngredient) {
-    return null;
-  }
-
-  let bestScore = 0;
-  let bestMatch: FoodLookupItem | null = null;
-  const ingredientTokens = tokenize(ingredient.name);
-
-  for (const candidate of indexedFoods) {
-    if (candidate.normalizedName === normalizedIngredient) {
-      return candidate;
-    }
-
-    if (
-      candidate.aliasSet.has(normalizedIngredient) &&
-      scoreAliasExact > bestScore
-    ) {
-      bestScore = scoreAliasExact;
-      bestMatch = candidate;
-      continue;
-    }
-
-    if (
-      candidate.normalizedName.startsWith(normalizedIngredient) &&
-      scoreStartsWith > bestScore
-    ) {
-      bestScore = scoreStartsWith;
-      bestMatch = candidate;
-      continue;
-    }
-
-    const ingredientTokensAllPresent = [...ingredientTokens].every((token) =>
-      candidate.tokenSet.has(token)
-    );
-
-    if (ingredientTokensAllPresent && scoreTokenMatch > bestScore) {
-      bestScore = scoreTokenMatch;
-      bestMatch = candidate;
-    }
-  }
-
-  return bestMatch;
+type RankOptions = {
+  embeddingCache?: EmbeddingCache | null;
 };
 
-export const matchIngredientToFood = (
+export const rankFoodCandidates = async (
   ingredient: ParsedIngredient,
-  foods: FoodLookupItem[]
-): FoodLookupItem | null => {
+  foods: FoodLookupItem[],
+  options: RankOptions = {}
+): Promise<FoodMatchCandidate[]> => {
   if (!foods.length) {
-    return null;
+    return [];
   }
 
   const indexed = buildIndex(foods);
-  return bestCandidate(ingredient, indexed);
+  const scored: FoodMatchCandidate[] = [];
+  const ingredientEmbedding = options.embeddingCache
+    ? await options.embeddingCache.embedIngredient(ingredient)
+    : null;
+
+  for (const candidate of indexed) {
+    let candidateEmbedding: number[] | null = null;
+    if (options.embeddingCache) {
+      candidateEmbedding = await options.embeddingCache.embedFood(candidate);
+    }
+
+    const result = scoreCandidate(ingredient, candidate, {
+      ingredientEmbedding,
+      candidateEmbedding,
+    });
+    if (result) {
+      scored.push(result);
+    }
+  }
+
+  return scored.sort((a, b) => b.confidence - a.confidence);
+};
+
+export const matchIngredientToFood = async (
+  ingredient: ParsedIngredient,
+  foods: FoodLookupItem[],
+  options?: RankOptions
+): Promise<FoodMatchCandidate | null> => {
+  const ranked = await rankFoodCandidates(ingredient, foods, options ?? {});
+  return ranked[0] ?? null;
 };

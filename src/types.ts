@@ -50,6 +50,8 @@ export type ParsedIngredient = {
   qty: number | null;
   unit: string | null;
   name: string;
+  descriptors?: string[];
+  normalizedTokens?: string[];
 };
 
 // Food lookup & matching -----------------------------------------------
@@ -60,14 +62,50 @@ export type FoodLookupItem = {
   aliases?: string[];
 };
 
+export type EmbeddingVector = number[];
+
 export type IndexedFood = FoodLookupItem & {
   normalizedName: string;
   tokenSet: Set<string>;
   aliasSet: Set<string>;
+  aliasTokenSets: Set<string>[];
+  embedding?: EmbeddingVector | null;
+};
+
+export type MatchReasonType =
+  | "exact-name"
+  | "alias-exact"
+  | "prefix-match"
+  | "token-overlap"
+  | "alias-token-overlap"
+  | "fuzzy-similarity"
+  | "embedding-similarity";
+
+export type MatchReason = {
+  type: MatchReasonType;
+  score: number;
+  meta?: Record<string, unknown>;
+};
+
+export type FoodMatchCandidate = {
+  food: FoodLookupItem;
+  confidence: number;
+  reasons: MatchReason[];
 };
 
 export type MatchedIngredient = ParsedIngredient & {
   foodId: string | null;
+  match?: FoodMatchCandidate | null;
+  candidates?: FoodMatchCandidate[];
+};
+
+export type ReviewQueueItem = {
+  ingredient: ParsedIngredient;
+  candidate?: FoodMatchCandidate | null;
+};
+
+export type ReviewQueueGateway = {
+  persist(items: ReviewQueueItem[]): Promise<void>;
 };
 
 // Service responses ----------------------------------------------------
@@ -77,24 +115,30 @@ export type RecipeIntakeResponse = {
   ingredients: MatchedIngredient[];
   unmatched: ParsedIngredient[];
   rawSchema?: unknown;
+  matches: MatchedIngredient[];
+  probables: MatchedIngredient[];
+  pendingReview: ReviewQueueItem[];
 };
 
 // Notion integration ---------------------------------------------------
 
 export type NotionGateway = {
   fetchFoodLookup(): Promise<FoodLookupItem[]>;
+  findRecipeBySourceUrl(sourceUrl: string): Promise<string | null>;
   createRecipePage(recipe: ScrapedRecipe): Promise<string>;
   createIngredientEntries(
     recipePageId: string,
     ingredients: MatchedIngredient[]
   ): Promise<void>;
+  findFoodByName(name: string): Promise<string | null>;
+  createFoodEntry(name: string, aliases?: string[]): Promise<string>;
 };
 
 export type NotionGatewayOptions = {
   apiToken?: string;
-  recipeDatabaseId?: string;
-  ingredientDatabaseId?: string;
-  foodDatabaseId?: string;
+  recipeDataSourceId?: string;
+  ingredientDataSourceId?: string;
+  foodDataSourceId?: string;
   propertyMappings?: {
     recipeName?: string;
     recipeSourceUrl?: string;
@@ -111,6 +155,7 @@ export type NotionGatewayOptions = {
     ingredientName?: string;
     foodName?: string;
     foodAliases?: string;
+    foodReviewed?: string;
   };
 };
 
@@ -132,4 +177,13 @@ export type RecipeIntakeOptions = {
   notionClient?: NotionGateway;
   persistToNotion?: boolean;
   scrapeRecipe?: typeof scrapeRecipeFromUrl;
+  embeddingGateway?: EmbeddingGateway;
+  reviewQueueGateway?: ReviewQueueGateway;
+};
+
+export type EmbeddingGateway = {
+  embedIngredient(
+    ingredient: ParsedIngredient
+  ): Promise<EmbeddingVector | null>;
+  embedFood(food: FoodLookupItem): Promise<EmbeddingVector | null>;
 };
