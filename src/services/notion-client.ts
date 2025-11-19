@@ -1044,7 +1044,11 @@ export class NotionClient implements NotionGateway {
       };
     }
 
-    if (mapping.quantity) {
+    if (
+      mapping.quantity &&
+      ingredient.qty !== null &&
+      ingredient.qty !== undefined
+    ) {
       properties[mapping.quantity] = {
         number: ingredient.qty,
       };
@@ -1369,6 +1373,81 @@ export class NotionClient implements NotionGateway {
         // Re-throw to surface the error, but log context first
         throw error;
       }
+    }
+
+    // Refresh recipe page to trigger rollup recalculation
+    // Notion rollups update automatically, but updating the page ensures they refresh
+    // Add a small delay to allow Notion to process the relations first
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await this.refreshRecipePage(recipePageId);
+  }
+
+  /**
+   * Refreshes a recipe page to trigger rollup recalculation.
+   * This is called after creating ingredient entries to ensure rollups update.
+   * Notion rollups can take a moment to update after relations are created,
+   * so we fetch the page and update it to force a refresh.
+   */
+  private async refreshRecipePage(recipePageId: string): Promise<void> {
+    try {
+      // Fetch the recipe page to get its current properties
+      const page = await this.client.pages.retrieve({ page_id: recipePageId });
+      if (!isFullPage(page)) {
+        logger.warn(
+          { recipePageId },
+          "Failed to refresh recipe page: page is not a full page object"
+        );
+        return;
+      }
+
+      const mappings = this.options.propertyMappings ?? defaultPropertyMappings;
+      const recipeNameProperty =
+        mappings.recipeName ?? defaultPropertyMappings.recipeName;
+      const nameProperty = page.properties[recipeNameProperty];
+
+      if (nameProperty?.type === "title") {
+        // Update the page with its existing name to trigger rollup recalculation
+        // This ensures that rollup properties on the recipe page are refreshed
+        // Convert response format to request format
+        const titleText = getPlainText(nameProperty.title) ?? "";
+        if (titleText) {
+          await this.client.pages.update({
+            page_id: recipePageId,
+            properties: {
+              [recipeNameProperty]: {
+                title: [
+                  {
+                    text: { content: titleText },
+                  },
+                ],
+              },
+            },
+          });
+          logger.debug(
+            { recipePageId },
+            "Refreshed recipe page to trigger rollup recalculation"
+          );
+        } else {
+          logger.debug(
+            { recipePageId },
+            "Recipe page title is empty, skipping refresh"
+          );
+        }
+      } else {
+        logger.debug(
+          { recipePageId, recipeNameProperty },
+          "Recipe page name property not found or not a title type, skipping refresh"
+        );
+      }
+    } catch (error) {
+      // Log warning but don't fail - rollups should update automatically anyway
+      logger.warn(
+        {
+          err: error instanceof Error ? error.message : error,
+          recipePageId,
+        },
+        "Failed to refresh recipe page (rollups should still update automatically)"
+      );
     }
   }
 }
