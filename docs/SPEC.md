@@ -139,7 +139,8 @@ POST /scrape-recipe
 3. Normalize instructions
 4. Parse each ingredient line
 5. Try to match each parsed ingredient to provided `foodLookup`
-6. Return structured payload
+6. If `persistToNotion=true`, persist unmatched ingredients to Food Lookup table (with Reviewed=false)
+7. Return structured payload
 
 ```typescript
 - Response: 200 OK
@@ -241,6 +242,7 @@ Integration
 -   Some sites don’t expose schema.org Recipe → do we want a fallback scraper (heavier, more brittle)?
 -   Ingredient phrasing varies a lot → do we want to allow an LLM “fix ingredients” step for better matching? (Yes)
 -   Food Lookup may not contain brand-specific items — how do we want to store those (create-on-first-see vs. force manual mapping)?
+    -   **Implemented**: Unmatched ingredients are automatically added to Food Lookup table with `Reviewed=false` for manual review. Names are cleaned and formatted, and USDA API is optionally queried for standardized names.
 -   Do we want to store the original raw JSON-LD in Notion for debugging? (No)
 -   Rate limits / anti-bot from some sites — do we need a proxy later? (Yes)
 

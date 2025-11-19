@@ -16,6 +16,7 @@ const singularizeToken = (token: string): string => {
     return lower;
   }
 
+  // Handle special plural forms
   if (lower.endsWith("ies")) {
     return `${lower.slice(0, -3)}y`;
   }
@@ -24,14 +25,22 @@ const singularizeToken = (token: string): string => {
     return `${lower.slice(0, -3)}f`;
   }
 
+  // Handle words ending in "ces" -> "ce" (e.g., "pieces" -> "piece")
+  if (lower.endsWith("ces")) {
+    return `${lower.slice(0, -3)}ce`;
+  }
+
+  // Handle words ending in "es" but not "ses", "xes", "ces"
   if (
     lower.endsWith("es") &&
     !lower.endsWith("ses") &&
-    !lower.endsWith("xes")
+    !lower.endsWith("xes") &&
+    !lower.endsWith("ces")
   ) {
     return lower.slice(0, -2);
   }
 
+  // Handle words ending in "s" but not "ss"
   if (lower.endsWith("s") && !lower.endsWith("ss")) {
     return lower.slice(0, -1);
   }

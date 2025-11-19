@@ -59,6 +59,7 @@ export type ParsedIngredient = {
 export type FoodLookupItem = {
   id: string;
   name: string;
+  details?: string | null;
   aliases?: string[];
 };
 
@@ -95,6 +96,8 @@ export type FoodMatchCandidate = {
 
 export type MatchedIngredient = ParsedIngredient & {
   foodId: string | null;
+  foodName?: string | null;
+  foodDetails?: string | null;
   match?: FoodMatchCandidate | null;
   candidates?: FoodMatchCandidate[];
 };
@@ -125,20 +128,31 @@ export type RecipeIntakeResponse = {
 export type NotionGateway = {
   fetchFoodLookup(): Promise<FoodLookupItem[]>;
   findRecipeBySourceUrl(sourceUrl: string): Promise<string | null>;
-  createRecipePage(recipe: ScrapedRecipe): Promise<string>;
+  createRecipePage(
+    recipe: ScrapedRecipe,
+    hasMissingIngredients?: boolean
+  ): Promise<string>;
   createIngredientEntries(
     recipePageId: string,
     ingredients: MatchedIngredient[]
   ): Promise<void>;
   findFoodByName(name: string): Promise<string | null>;
-  createFoodEntry(name: string, aliases?: string[]): Promise<string>;
+  createFoodEntry(
+    name: string,
+    aliases?: string[],
+    details?: string | null,
+    usdaId?: number | null
+  ): Promise<string>;
 };
 
 export type NotionGatewayOptions = {
   apiToken?: string;
   recipeDataSourceId?: string;
+  recipeDatabaseId?: string; // Fallback for write operations when data source is empty
   ingredientDataSourceId?: string;
+  ingredientDatabaseId?: string; // Fallback for write operations when data source is empty
   foodDataSourceId?: string;
+  foodDatabaseId?: string; // Fallback for write operations when data source is empty
   propertyMappings?: {
     recipeName?: string;
     recipeSourceUrl?: string;
@@ -148,14 +162,17 @@ export type NotionGatewayOptions = {
     recipeMeal?: string;
     recipeCoverImage?: string;
     recipeTags?: string;
+    recipeMissingIngredients?: string;
     ingredientRecipeRelation?: string;
     ingredientFoodRelation?: string;
     ingredientQuantity?: string;
     ingredientUnit?: string;
     ingredientName?: string;
+    ingredientDetails?: string;
     foodName?: string;
     foodAliases?: string;
     foodReviewed?: string;
+    foodUsdaId?: string;
   };
 };
 
@@ -168,6 +185,7 @@ export type RecipePropertyNames = {
   meal?: string;
   coverImage?: string;
   tags?: string;
+  missingIngredients?: string;
 };
 
 // Service configuration ------------------------------------------------

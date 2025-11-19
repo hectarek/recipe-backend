@@ -14,6 +14,7 @@ import type {
   RecipePropertyNames,
   ScrapedRecipe,
 } from "../types.js";
+import { splitFoodNameAndDetails } from "../utils/food-name-formatter.js";
 
 const isFullPage = (
   page: PageObjectResponse | PartialPageObjectResponse
@@ -36,14 +37,17 @@ const defaultPropertyMappings = {
   recipeMeal: "Meal",
   recipeCoverImage: "Cover Image",
   recipeTags: "Tags",
+  recipeMissingIngredients: "Missing Ingredients",
   ingredientRecipeRelation: "Recipe",
   ingredientFoodRelation: "Food",
   ingredientQuantity: "Qty",
   ingredientUnit: "Unit",
   ingredientName: "Name",
+  ingredientDetails: "Details",
   foodName: "Name",
   foodAliases: "Aliases",
   foodReviewed: "Reviewed",
+  foodUsdaId: "USDA FDC ID",
 } as const;
 
 const normalizeDatabaseIdForUrl = (value: string): string => {
@@ -151,23 +155,12 @@ const buildCoverImageFiles = (
   ];
 };
 
-const buildRecipePropertyValues = (
+const buildOptionalRecipeProperties = (
   recipe: ScrapedRecipe,
-  names: RecipePropertyNames
-): {
-  properties: Record<string, unknown>;
-  coverImageUrl?: string;
-} => {
-  const properties: Record<string, unknown> = {
-    [names.name]: {
-      title: [
-        {
-          text: { content: recipe.title },
-        },
-      ],
-    },
-  };
-
+  names: RecipePropertyNames,
+  hasMissingIngredients: boolean,
+  properties: Record<string, unknown>
+): string | undefined => {
   if (recipe.sourceUrl && names.sourceUrl) {
     properties[names.sourceUrl] = {
       url: recipe.sourceUrl,
@@ -218,16 +211,48 @@ const buildRecipePropertyValues = (
     };
   }
 
-  let coverImageUrl: string | undefined;
-  const coverImageFiles = buildCoverImageFiles(recipe.image, recipe.title);
-  if (coverImageFiles) {
-    if (names.coverImage) {
-      properties[names.coverImage] = {
-        files: coverImageFiles,
-      };
-    }
-    coverImageUrl = coverImageFiles[0]?.external.url;
+  // Set Missing Ingredients checkbox if property is configured
+  if (names.missingIngredients) {
+    properties[names.missingIngredients] = {
+      checkbox: hasMissingIngredients,
+    };
   }
+
+  const coverImageFiles = buildCoverImageFiles(recipe.image, recipe.title);
+  if (coverImageFiles && names.coverImage) {
+    properties[names.coverImage] = {
+      files: coverImageFiles,
+    };
+    return coverImageFiles[0]?.external.url;
+  }
+
+  return;
+};
+
+const buildRecipePropertyValues = (
+  recipe: ScrapedRecipe,
+  names: RecipePropertyNames,
+  hasMissingIngredients = false
+): {
+  properties: Record<string, unknown>;
+  coverImageUrl?: string;
+} => {
+  const properties: Record<string, unknown> = {
+    [names.name]: {
+      title: [
+        {
+          text: { content: recipe.title },
+        },
+      ],
+    },
+  };
+
+  const coverImageUrl = buildOptionalRecipeProperties(
+    recipe,
+    names,
+    hasMissingIngredients,
+    properties
+  );
 
   return { properties, coverImageUrl };
 };
@@ -387,6 +412,17 @@ export class NotionClient implements NotionGateway {
   }
 
   private async resolveFoodDatabaseId(): Promise<string | null> {
+    // If explicitly provided (fallback), use it
+    if (this.options.foodDatabaseId) {
+      const normalized = normalizeDatabaseIdForUrl(this.options.foodDatabaseId);
+      logger.debug(
+        { foodDatabaseId: normalized },
+        "Using provided food database ID as fallback"
+      );
+      return normalized;
+    }
+
+    // Otherwise, resolve from data source
     const dataSourceId = this.resolveFoodDataSourceId();
     return await this.resolveDatabaseIdFromDataSource(dataSourceId, "food");
   }
@@ -396,6 +432,19 @@ export class NotionClient implements NotionGateway {
   }
 
   private async resolveRecipeDatabaseId(): Promise<string | null> {
+    // If explicitly provided (fallback), use it
+    if (this.options.recipeDatabaseId) {
+      const normalized = normalizeDatabaseIdForUrl(
+        this.options.recipeDatabaseId
+      );
+      logger.debug(
+        { recipeDatabaseId: normalized },
+        "Using provided recipe database ID as fallback"
+      );
+      return normalized;
+    }
+
+    // Otherwise, resolve from data source
     const dataSourceId = this.resolveRecipeDataSourceId();
     return await this.resolveDatabaseIdFromDataSource(dataSourceId, "recipe");
   }
@@ -408,6 +457,19 @@ export class NotionClient implements NotionGateway {
   }
 
   private async resolveIngredientDatabaseId(): Promise<string | null> {
+    // If explicitly provided (fallback), use it
+    if (this.options.ingredientDatabaseId) {
+      const normalized = normalizeDatabaseIdForUrl(
+        this.options.ingredientDatabaseId
+      );
+      logger.debug(
+        { ingredientDatabaseId: normalized },
+        "Using provided ingredient database ID as fallback"
+      );
+      return normalized;
+    }
+
+    // Otherwise, resolve from data source
     const dataSourceId = this.resolveIngredientDataSourceId();
     return await this.resolveDatabaseIdFromDataSource(
       dataSourceId,
@@ -431,6 +493,31 @@ export class NotionClient implements NotionGateway {
       has_more: boolean;
       next_cursor: string | null;
     }>;
+  }
+
+  private processFoodLookupPage(
+    result: PageObjectResponse | PartialPageObjectResponse,
+    items: FoodLookupItem[]
+  ): void {
+    if (!isFullPage(result)) {
+      logger.debug(
+        { pageId: result.id },
+        "Skipping non-page result in food lookup fetch."
+      );
+      return;
+    }
+
+    const { item, reason } = this.mapFoodPage(result);
+    if (item) {
+      items.push(item);
+    } else if (reason !== "not_reviewed") {
+      // Only warn for actual errors, not for expected filtering (not_reviewed)
+      logger.warn(
+        { pageId: result.id, reason },
+        "Failed to map food lookup page due to missing properties or empty name."
+      );
+    }
+    // Silently skip not_reviewed items (expected behavior)
   }
 
   async fetchFoodLookup(): Promise<FoodLookupItem[]> {
@@ -467,23 +554,7 @@ export class NotionClient implements NotionGateway {
       );
 
       for (const result of response.results) {
-        if (!isFullPage(result)) {
-          logger.debug(
-            { pageId: result.id },
-            "Skipping non-page result in food lookup fetch."
-          );
-          continue;
-        }
-
-        const mapped = this.mapFoodPage(result);
-        if (mapped) {
-          items.push(mapped);
-        } else {
-          logger.warn(
-            { pageId: result.id },
-            "Failed to map food lookup page due to missing properties."
-          );
-        }
+        this.processFoodLookupPage(result, items);
       }
 
       cursor = response.has_more
@@ -547,7 +618,10 @@ export class NotionClient implements NotionGateway {
     return aliases;
   }
 
-  private mapFoodPage(page: PageObjectResponse): FoodLookupItem | null {
+  private mapFoodPage(page: PageObjectResponse): {
+    item: FoodLookupItem | null;
+    reason: "success" | "missing_property" | "empty_name" | "not_reviewed";
+  } {
     const properties = page.properties;
     const mappings = this.options.propertyMappings ?? defaultPropertyMappings;
     const namePropertyKey =
@@ -559,7 +633,7 @@ export class NotionClient implements NotionGateway {
         { pageId: page.id, namePropertyKey },
         "Food lookup page missing title property or property is not a title type."
       );
-      return null;
+      return { item: null, reason: "missing_property" };
     }
 
     const name = getPlainText(nameProperty.title);
@@ -568,7 +642,7 @@ export class NotionClient implements NotionGateway {
         { pageId: page.id },
         "Food lookup page title resolved to empty string."
       );
-      return null;
+      return { item: null, reason: "empty_name" };
     }
 
     // Check Reviewed status - only include items that are reviewed (checked)
@@ -577,16 +651,61 @@ export class NotionClient implements NotionGateway {
         { pageId: page.id, name },
         "Food lookup item not reviewed, skipping from lookup."
       );
-      return null;
+      return { item: null, reason: "not_reviewed" };
     }
 
     const aliases = this.extractFoodAliases(properties, mappings, page.id);
 
+    // Split name into name and details if it contains comma-separated details
+    const { name: foodName, details: foodDetails } =
+      splitFoodNameAndDetails(name);
+
     return {
-      id: page.id,
-      name,
-      aliases: aliases.length ? aliases : undefined,
+      item: {
+        id: page.id,
+        name: foodName,
+        details: foodDetails ?? null,
+        aliases: aliases.length ? aliases : undefined,
+      },
+      reason: "success",
     };
+  }
+
+  private async findPageInDataSource(
+    dataSourceId: string,
+    matcher: (page: PageObjectResponse) => boolean
+  ): Promise<string | null> {
+    try {
+      let cursor: string | undefined;
+      do {
+        const response = await this.queryDataSource({
+          dataSourceId,
+          startCursor: cursor,
+        });
+
+        for (const page of response.results) {
+          if (!isFullPage(page)) {
+            continue;
+          }
+
+          if (matcher(page)) {
+            return page.id;
+          }
+        }
+
+        cursor = response.has_more
+          ? (response.next_cursor ?? undefined)
+          : undefined;
+      } while (cursor);
+
+      return null;
+    } catch (error) {
+      logger.warn(
+        { err: error, dataSourceId },
+        "Failed to query data source for page"
+      );
+      return null;
+    }
   }
 
   async findRecipeBySourceUrl(sourceUrl: string): Promise<string | null> {
@@ -594,10 +713,10 @@ export class NotionClient implements NotionGateway {
       return null;
     }
 
-    const databaseId = await this.resolveRecipeDatabaseId();
-    if (!databaseId) {
+    const dataSourceId = this.resolveRecipeDataSourceId();
+    if (!dataSourceId) {
       logger.debug(
-        "Cannot search for existing recipes: recipe database ID could not be resolved from data source."
+        "Cannot search for existing recipes: recipe data source ID is not configured."
       );
       return null;
     }
@@ -613,49 +732,20 @@ export class NotionClient implements NotionGateway {
       return null;
     }
 
-    try {
-      // Use databases.query() for filtered queries (data sources don't support filters)
-      const response = await (
-        this.client.databases as unknown as {
-          query: (args: {
-            database_id: string;
-            filter: {
-              property: string;
-              url: { equals: string };
-            };
-            page_size: number;
-          }) => Promise<{
-            results: Array<PageObjectResponse | PartialPageObjectResponse>;
-          }>;
-        }
-      ).query({
-        database_id: databaseId,
-        filter: {
-          property: recipeSourceUrlProperty,
-          url: {
-            equals: sourceUrl,
-          },
-        },
-        page_size: 1,
-      });
+    const pageId = await this.findPageInDataSource(dataSourceId, (page) => {
+      const properties = page.properties;
+      const urlProperty = properties[recipeSourceUrlProperty];
+      return urlProperty?.type === "url" && urlProperty.url === sourceUrl;
+    });
 
-      const existingPage = response.results[0];
-      if (existingPage && isFullPage(existingPage)) {
-        logger.debug(
-          { recipePageId: existingPage.id, sourceUrl },
-          "Found existing recipe page by source URL"
-        );
-        return existingPage.id;
-      }
-
-      return null;
-    } catch (error) {
-      logger.warn(
-        { err: error, sourceUrl },
-        "Failed to query for existing recipe by source URL"
+    if (pageId) {
+      logger.debug(
+        { recipePageId: pageId, sourceUrl },
+        "Found existing recipe page by source URL"
       );
-      return null;
     }
+
+    return pageId;
   }
 
   async findFoodByName(name: string): Promise<string | null> {
@@ -663,10 +753,10 @@ export class NotionClient implements NotionGateway {
       return null;
     }
 
-    const databaseId = await this.resolveFoodDatabaseId();
-    if (!databaseId) {
+    const dataSourceId = this.resolveFoodDataSourceId();
+    if (!dataSourceId) {
       logger.debug(
-        "Cannot search for existing food: food database ID could not be resolved from data source."
+        "Cannot search for existing food: food data source ID is not configured."
       );
       return null;
     }
@@ -682,56 +772,41 @@ export class NotionClient implements NotionGateway {
       return null;
     }
 
-    try {
-      // Use databases.query() for filtered queries (data sources don't support filters)
-      const response = await (
-        this.client.databases as unknown as {
-          query: (args: {
-            database_id: string;
-            filter: {
-              property: string;
-              title: { equals: string };
-            };
-            page_size: number;
-          }) => Promise<{
-            results: Array<PageObjectResponse | PartialPageObjectResponse>;
-          }>;
-        }
-      ).query({
-        database_id: databaseId,
-        filter: {
-          property: foodNameProperty,
-          title: {
-            equals: name,
-          },
-        },
-        page_size: 1,
-      });
+    const normalizedName = name.toLowerCase().trim();
 
-      const existingPage = response.results[0];
-      if (existingPage && isFullPage(existingPage)) {
-        logger.debug(
-          { foodPageId: existingPage.id, name },
-          "Found existing food page by name"
-        );
-        return existingPage.id;
+    const pageId = await this.findPageInDataSource(dataSourceId, (page) => {
+      const properties = page.properties;
+      const nameProperty = properties[foodNameProperty];
+      if (nameProperty?.type === "title") {
+        const pageName = getPlainText(nameProperty.title);
+        return pageName?.toLowerCase().trim() === normalizedName;
       }
+      return false;
+    });
 
-      return null;
-    } catch (error) {
-      logger.warn(
-        { err: error, name },
-        "Failed to query for existing food by name"
+    if (pageId) {
+      logger.debug(
+        { foodPageId: pageId, name },
+        "Found existing food page by name"
       );
-      return null;
     }
+
+    return pageId;
   }
 
-  async createFoodEntry(name: string, aliases?: string[]): Promise<string> {
+  async createFoodEntry(
+    name: string,
+    aliases?: string[],
+    _details: string | null = null,
+    usdaId: number | null = null
+  ): Promise<string> {
+    // _details parameter is for future use when food lookup table supports details property
     const databaseId = await this.resolveFoodDatabaseId();
     if (!databaseId) {
-      throw new Error(
-        "foodDatabaseId could not be resolved from foodDataSourceId. Ensure NOTION_FOOD_DATA_SOURCE_ID is configured and the data source contains at least one page."
+      throw this.buildDatabaseIdError(
+        "food",
+        !!this.options.foodDataSourceId,
+        !!this.options.foodDatabaseId
       );
     }
 
@@ -752,6 +827,8 @@ export class NotionClient implements NotionGateway {
       mappings.foodAliases ?? defaultPropertyMappings.foodAliases;
     const foodReviewedProperty =
       mappings.foodReviewed ?? defaultPropertyMappings.foodReviewed;
+    const foodUsdaIdProperty =
+      mappings.foodUsdaId ?? defaultPropertyMappings.foodUsdaId;
 
     const properties: Record<string, unknown> = {
       [foodNameProperty]: {
@@ -765,6 +842,17 @@ export class NotionClient implements NotionGateway {
         checkbox: false, // Set Reviewed to unchecked
       },
     };
+
+    // Add USDA ID if provided (as rich_text since Notion property is rich_text)
+    if (usdaId !== null && usdaId !== undefined && foodUsdaIdProperty) {
+      properties[foodUsdaIdProperty] = {
+        rich_text: [
+          {
+            text: { content: String(usdaId) },
+          },
+        ],
+      };
+    }
 
     // Add aliases if provided
     if (aliases && aliases.length > 0 && foodAliasesProperty) {
@@ -814,11 +902,42 @@ export class NotionClient implements NotionGateway {
     return null;
   }
 
-  async createRecipePage(recipe: ScrapedRecipe): Promise<string> {
+  private buildDatabaseIdError(
+    type: "recipe" | "food" | "ingredient",
+    hasDataSourceId: boolean,
+    hasDatabaseId: boolean
+  ): Error {
+    const envVarNames = {
+      recipe: "NOTION_RECIPES_DATA_SOURCE_ID",
+      food: "NOTION_FOOD_DATA_SOURCE_ID",
+      ingredient: "NOTION_INGREDIENTS_DATA_SOURCE_ID",
+    };
+    const envVarName = envVarNames[type];
+
+    if (hasDataSourceId && !hasDatabaseId) {
+      return new Error(
+        `${type}DatabaseId could not be resolved from ${type}DataSourceId. ` +
+          "The data source may be empty (no pages exist yet). " +
+          `Either add at least one page to the data source, or provide ${type}DatabaseId as a fallback option.`
+      );
+    }
+
+    return new Error(
+      `${type}DatabaseId is required. ` +
+        `Provide either ${envVarName} (with at least one page) or ${type}DatabaseId as a fallback.`
+    );
+  }
+
+  async createRecipePage(
+    recipe: ScrapedRecipe,
+    hasMissingIngredients = false
+  ): Promise<string> {
     const databaseId = await this.resolveRecipeDatabaseId();
     if (!databaseId) {
-      throw new Error(
-        "recipeDatabaseId could not be resolved from recipeDataSourceId. Ensure NOTION_RECIPES_DATA_SOURCE_ID is configured and the data source contains at least one page."
+      throw this.buildDatabaseIdError(
+        "recipe",
+        !!this.options.recipeDataSourceId,
+        !!this.options.recipeDatabaseId
       );
     }
 
@@ -846,17 +965,25 @@ export class NotionClient implements NotionGateway {
       mappings.recipeCoverImage ?? defaultPropertyMappings.recipeCoverImage;
     const recipeTagsProperty =
       mappings.recipeTags ?? defaultPropertyMappings.recipeTags;
+    const recipeMissingIngredientsProperty =
+      mappings.recipeMissingIngredients ??
+      defaultPropertyMappings.recipeMissingIngredients;
 
-    const { properties, coverImageUrl } = buildRecipePropertyValues(recipe, {
-      name: recipeNameProperty,
-      sourceUrl: recipeSourceUrlProperty,
-      servings: recipeServingsProperty,
-      instructions: recipeInstructionsProperty,
-      time: recipeTimeProperty,
-      meal: recipeMealProperty,
-      coverImage: recipeCoverImageProperty,
-      tags: recipeTagsProperty,
-    });
+    const { properties, coverImageUrl } = buildRecipePropertyValues(
+      recipe,
+      {
+        name: recipeNameProperty,
+        sourceUrl: recipeSourceUrlProperty,
+        servings: recipeServingsProperty,
+        instructions: recipeInstructionsProperty,
+        time: recipeTimeProperty,
+        meal: recipeMealProperty,
+        coverImage: recipeCoverImageProperty,
+        tags: recipeTagsProperty,
+        missingIngredients: recipeMissingIngredientsProperty,
+      },
+      hasMissingIngredients
+    );
 
     const instructionBlocks = buildInstructionBlocks(recipe.instructions);
 
@@ -893,6 +1020,7 @@ export class NotionClient implements NotionGateway {
       quantity: string | null;
       unit: string | null;
       name: string;
+      details: string | null;
     }
   ): Parameters<Client["pages"]["create"]>[0]["properties"] {
     const properties: Record<string, unknown> = {
@@ -902,7 +1030,9 @@ export class NotionClient implements NotionGateway {
       [mapping.name]: {
         title: [
           {
-            text: { content: ingredient.name },
+            text: {
+              content: ingredient.foodName ?? ingredient.name,
+            },
           },
         ],
       },
@@ -934,22 +1064,218 @@ export class NotionClient implements NotionGateway {
       }
     }
 
+    // Add details if available and property is configured
+    if (mapping.details && ingredient.foodDetails) {
+      properties[mapping.details] = {
+        rich_text: [
+          {
+            text: { content: ingredient.foodDetails },
+          },
+        ],
+      };
+    }
+
     return properties as Parameters<Client["pages"]["create"]>[0]["properties"];
   }
 
-  async createIngredientEntries(
+  private deduplicateIngredients(
     recipePageId: string,
     ingredients: MatchedIngredient[]
-  ) {
-    const databaseId = await this.resolveIngredientDatabaseId();
-    if (!databaseId) {
-      throw new Error(
-        "ingredientDatabaseId could not be resolved from ingredientDataSourceId. Ensure NOTION_INGREDIENTS_DATA_SOURCE_ID is configured and the data source contains at least one page."
+  ): MatchedIngredient[] {
+    const seen = new Set<string>();
+    const uniqueIngredients: MatchedIngredient[] = [];
+
+    for (const ingredient of ingredients) {
+      // Create a unique key: recipe + food + quantity + unit
+      const key = `${recipePageId}:${ingredient.foodId ?? ingredient.name}:${ingredient.qty ?? ""}:${ingredient.unit ?? ""}`;
+      if (seen.has(key)) {
+        logger.debug(
+          {
+            ingredient: ingredient.name,
+            foodId: ingredient.foodId,
+            qty: ingredient.qty,
+            unit: ingredient.unit,
+          },
+          "Skipping duplicate ingredient entry"
+        );
+        continue;
+      }
+      seen.add(key);
+      uniqueIngredients.push(ingredient);
+    }
+
+    return uniqueIngredients;
+  }
+
+  private matchesQuantity(
+    properties: PageObjectResponse["properties"],
+    quantityProperty: string | null,
+    expectedQty: number | null
+  ): boolean {
+    if (!quantityProperty) {
+      return true; // No quantity property means match
+    }
+
+    const qtyProp = properties[quantityProperty];
+    if (qtyProp?.type === "number") {
+      const pageQty = qtyProp.number;
+      if (expectedQty !== null && expectedQty !== undefined) {
+        return pageQty === expectedQty;
+      }
+      return pageQty === null;
+    }
+
+    return expectedQty === null || expectedQty === undefined;
+  }
+
+  private matchesUnit(
+    properties: PageObjectResponse["properties"],
+    unitProperty: string | null,
+    expectedUnit: string | null
+  ): boolean {
+    if (!unitProperty) {
+      return true; // No unit property means match
+    }
+
+    const unitProp = properties[unitProperty];
+    if (unitProp?.type === "select") {
+      const pageUnit = unitProp.select?.name ?? null;
+      if (expectedUnit) {
+        return pageUnit === expectedUnit;
+      }
+      return pageUnit === null;
+    }
+
+    return !expectedUnit;
+  }
+
+  private matchesFood(
+    properties: PageObjectResponse["properties"],
+    ingredient: MatchedIngredient,
+    mappings: {
+      foodRelation: string;
+      name: string;
+    }
+  ): boolean {
+    if (ingredient.foodId) {
+      const foodRelationProp = properties[mappings.foodRelation];
+      return (
+        foodRelationProp?.type === "relation" &&
+        foodRelationProp.relation.some((rel) => rel.id === ingredient.foodId)
       );
     }
 
+    // Match by name if no foodId
+    const nameProp = properties[mappings.name];
+    if (nameProp?.type === "title") {
+      const pageName = getPlainText(nameProp.title);
+      const ingredientName = ingredient.foodName ?? ingredient.name;
+      return (
+        pageName?.toLowerCase().trim() === ingredientName.toLowerCase().trim()
+      );
+    }
+
+    return false;
+  }
+
+  private matchesRecipeRelation(
+    properties: PageObjectResponse["properties"],
+    recipeRelationProperty: string,
+    recipePageId: string
+  ): boolean {
+    const recipeRelationProp = properties[recipeRelationProperty];
+    return (
+      recipeRelationProp?.type === "relation" &&
+      recipeRelationProp.relation.some((rel) => rel.id === recipePageId)
+    );
+  }
+
+  private matchesIngredientPage(
+    page: PageObjectResponse,
+    recipePageId: string,
+    ingredient: MatchedIngredient,
+    mappings: {
+      recipeRelation: string;
+      foodRelation: string;
+      quantity: string | null;
+      unit: string | null;
+      name: string;
+    }
+  ): boolean {
+    const properties = page.properties;
+
+    // Check recipe relation
+    if (
+      !this.matchesRecipeRelation(
+        properties,
+        mappings.recipeRelation,
+        recipePageId
+      )
+    ) {
+      return false;
+    }
+
+    // Check quantity match
+    if (!this.matchesQuantity(properties, mappings.quantity, ingredient.qty)) {
+      return false;
+    }
+
+    // Check unit match
+    if (!this.matchesUnit(properties, mappings.unit, ingredient.unit)) {
+      return false;
+    }
+
+    // Check food relation or name match
+    return this.matchesFood(properties, ingredient, {
+      foodRelation: mappings.foodRelation,
+      name: mappings.name,
+    });
+  }
+
+  private async findExistingIngredient(
+    recipePageId: string,
+    ingredient: MatchedIngredient,
+    mappings: {
+      recipeRelation: string;
+      foodRelation: string;
+      quantity: string | null;
+      unit: string | null;
+      name: string;
+    }
+  ): Promise<string | null> {
+    const dataSourceId = this.resolveIngredientDataSourceId();
+    if (!dataSourceId) {
+      return null;
+    }
+
+    try {
+      // Query data source and filter in memory (data sources don't support filters)
+      return await this.findPageInDataSource(dataSourceId, (page) =>
+        this.matchesIngredientPage(page, recipePageId, ingredient, mappings)
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          err: error instanceof Error ? error.message : error,
+          recipePageId,
+          ingredient: ingredient.name,
+        },
+        "Failed to query for existing ingredient"
+      );
+      return null;
+    }
+  }
+
+  private resolveIngredientMappings(): {
+    recipeRelation: string;
+    foodRelation: string;
+    quantity: string | null;
+    unit: string | null;
+    name: string;
+    details: string | null;
+  } {
     const mappings = this.options.propertyMappings ?? defaultPropertyMappings;
-    const resolvedMappings = {
+    return {
       recipeRelation:
         mappings.ingredientRecipeRelation ??
         defaultPropertyMappings.ingredientRecipeRelation,
@@ -965,9 +1291,63 @@ export class NotionClient implements NotionGateway {
         defaultPropertyMappings.ingredientUnit ??
         null,
       name: mappings.ingredientName ?? defaultPropertyMappings.ingredientName,
+      details:
+        mappings.ingredientDetails ??
+        defaultPropertyMappings.ingredientDetails ??
+        null,
     };
+  }
 
-    for (const ingredient of ingredients) {
+  async createIngredientEntries(
+    recipePageId: string,
+    ingredients: MatchedIngredient[]
+  ) {
+    const databaseId = await this.resolveIngredientDatabaseId();
+    if (!databaseId) {
+      throw this.buildDatabaseIdError(
+        "ingredient",
+        !!this.options.ingredientDataSourceId,
+        !!this.options.ingredientDatabaseId
+      );
+    }
+
+    const resolvedMappings = this.resolveIngredientMappings();
+
+    // Deduplicate ingredients before creating entries
+    const uniqueIngredients = this.deduplicateIngredients(
+      recipePageId,
+      ingredients
+    );
+
+    for (const ingredient of uniqueIngredients) {
+      // Check if ingredient already exists before creating
+      const existingId = await this.findExistingIngredient(
+        recipePageId,
+        ingredient,
+        {
+          recipeRelation: resolvedMappings.recipeRelation,
+          foodRelation: resolvedMappings.foodRelation,
+          quantity: resolvedMappings.quantity,
+          unit: resolvedMappings.unit,
+          name: resolvedMappings.name,
+        }
+      );
+
+      if (existingId) {
+        logger.debug(
+          {
+            ingredientPageId: existingId,
+            recipePageId,
+            ingredient: ingredient.name,
+            foodId: ingredient.foodId,
+            qty: ingredient.qty,
+            unit: ingredient.unit,
+          },
+          "Ingredient entry already exists, skipping creation"
+        );
+        continue;
+      }
+
       try {
         await this.client.pages.create({
           parent: { database_id: databaseId },

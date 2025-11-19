@@ -26,6 +26,9 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 -   **Notion Integration**: Full CRUD operations using Notion API v2025+ data sources
 -   **Review Queue**: Handles unmatched/low-confidence ingredients for manual review
 -   **Embedding Support**: Optional semantic matching via OpenAI and Pinecone
+-   **Food Name Formatting**: Intelligent cleaning and capitalization of ingredient names
+-   **USDA API Integration**: Optional lookup of standardized food names via USDA FoodData Central API
+-   **Unmatched Ingredient Persistence**: Automatically adds unmatched ingredients to food lookup table for review
 
 ---
 
@@ -159,6 +162,8 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 -   `mapParsedToMatched()` - Maps parsed ingredients to matched ingredients
 -   `categorizeMatch()` - Categorizes matches by confidence threshold
 -   `persistToNotion()` - Persists matched ingredients to Notion
+-   `persistUnmatchedToFoodLookup()` - Adds unmatched ingredients to food lookup table
+-   `processUnmatchedIngredient()` - Processes individual unmatched ingredient (formats name, queries USDA)
 
 **Match Categories**:
 
@@ -395,6 +400,7 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 -   Caches resolved IDs for performance
 -   Prevents duplicates (recipes by URL, foods by name)
 -   Filters food lookup by "Reviewed" checkbox
+-   Improved error handling (only warns on actual errors, not expected filtering)
 
 **Data Source Pattern**:
 
@@ -410,6 +416,7 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 -   `createIngredientEntries()` - Creates ingredient pages
 -   `findFoodByName()` - Checks for duplicate foods
 -   `createFoodEntry()` - Creates food entry (with Reviewed=false)
+-   `processFoodLookupPage()` - Processes individual pages with improved error handling
 
 **Property Mappings**:
 
@@ -422,6 +429,7 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 -   New food entries created with `Reviewed=false`
 -   `fetchFoodLookup()` only returns items where `Reviewed=true`
 -   Prevents duplicates by checking name before creation
+-   Improved logging: only warns on missing properties/empty names, silently skips unreviewed items
 
 ---
 
@@ -451,7 +459,72 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 
 ---
 
-### 13. Logger (`src/logger.ts`)
+### 13. Food Name Formatter (`src/utils/food-name-formatter.ts`)
+
+**Purpose**: Formats and cleans ingredient names for food lookup table entries.
+
+**Key Features**:
+
+-   Cleans HTML entities (`&amp;` → `&`, etc.)
+-   Normalizes whitespace (collapses multiple spaces)
+-   Applies smart title case capitalization
+-   Removes unit-like words (ribs, pieces, stalks, etc.)
+-   Preserves acronyms (e.g., "USDA", "FDC")
+-   Handles separators (hyphens, slashes) correctly
+
+**Key Functions**:
+
+-   `formatFoodName()` - Main formatting function (cleans + capitalizes)
+-   `titleCase()` - Smart capitalization preserving acronyms
+-   `cleanFoodName()` - Removes unit-like words and improves structure
+-   `extractAliases()` - Extracts aliases from normalized tokens
+
+**Example Transformations**:
+
+-   `"salt &amp; pepper"` → `"Salt & Pepper"`
+-   `"rib celery piec"` → `"Celery"` (unit words removed)
+-   `"worcestershire sauce"` → `"Worcestershire Sauce"`
+
+**Unit-Like Words Removed**:
+
+-   `rib`, `ribs`, `piece`, `pieces`, `piec`, `stalk`, `stalks`, `head`, `heads`, `bulb`, `bulbs`, `clove`, `cloves`, `leaf`, `leaves`
+
+---
+
+### 14. USDA API Client (`src/services/usda-api-client.ts`)
+
+**Purpose**: Searches USDA FoodData Central API for standardized food names.
+
+**Key Features**:
+
+-   Optional integration (works without API key)
+-   Searches by food name
+-   Returns best matching food item
+-   Focuses on "Foundation" and "SR Legacy" data types (standard foods)
+-   Gracefully handles API failures
+
+**Key Methods**:
+
+-   `searchFoods()` - Search for foods by name
+-   `findBestMatch()` - Get best matching food item
+
+**API Endpoint**: `https://api.nal.usda.gov/fdc/v1/foods/search`
+
+**Configuration**:
+
+-   `USDA_API_KEY` environment variable (optional)
+-   If not configured, client silently skips USDA lookups
+
+**Usage**:
+
+-   Used during unmatched ingredient processing
+-   If USDA match found, uses USDA description as primary food name
+-   USDA descriptions are more standardized than parsed ingredient names
+-   Still creates entries with `Reviewed=false` for manual review
+
+---
+
+### 15. Logger (`src/logger.ts`)
 
 **Purpose**: Structured logging with configurable levels.
 
@@ -476,7 +549,7 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 
 ---
 
-### 14. Constants (`src/const.ts`)
+### 16. Constants (`src/const.ts`)
 
 **Purpose**: Centralized constants and regex patterns.
 
@@ -489,7 +562,7 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
 
 ---
 
-### 15. Types (`src/types.ts`)
+### 17. Types (`src/types.ts`)
 
 **Purpose**: Centralized TypeScript type definitions.
 
@@ -560,8 +633,13 @@ The Recipe Backend is a microservice built with **Bun** that ingests recipe URLs
    │   └─► Returns: ReviewQueueItem[]
    │
    └─► 10. Persist to Notion (if persistToNotion=true)
-       - Creates recipe page
-       - Creates ingredient pages (only auto-matched)
+       ├─► Creates recipe page
+       ├─► Creates ingredient pages (only auto-matched)
+       └─► Persists unmatched ingredients to food lookup
+           ├─► Formats food names (cleans HTML entities, removes unit words)
+           ├─► Queries USDA API (optional, if API key configured)
+           ├─► Uses USDA description if match found
+           └─► Creates food entries with Reviewed=false
        └─► Returns: Recipe page ID
    │
    ▼
@@ -761,6 +839,7 @@ Ingredient: "1 cup chopped onion"
 | `PINECONE_INDEX_HOST`               | Pinecone index host URL                                            | No       | -                        |
 | `PINECONE_INDEX_NAME`               | Pinecone index name                                                | No       | -                        |
 | `PINECONE_NAMESPACE`                | Pinecone namespace                                                 | No       | -                        |
+| `USDA_API_KEY`                      | USDA FoodData Central API key                                      | No       | -                        |
 
 \* Required for Notion features (food lookup or persistence) \*\* Required when `persistToNotion=true`
 
@@ -880,11 +959,15 @@ curl -X POST http://localhost:3000/scrape-recipe \
 6. **Webhooks**: Support Notion webhooks for review queue updates
 7. **Multi-language**: Support non-English recipe sites
 8. **Custom Scrapers**: Fallback scrapers for sites without schema.org markup
+9. **USDA Metadata Storage**: Store USDA FDC ID and other metadata in Notion
+10. **Name/Detail Splitting**: Implement heuristic splitting to separate base name from preparation details
+11. **USDA Confidence Scoring**: Use USDA match confidence to determine if USDA description should override formatted name
 
 ---
 
 ## References
 
 -   [Notion API v2025+ Best Practices](./.cursor/rules/notion-api-v2025-best-practices.mdc)
+-   [Food Name Formatting Plan](./FOOD_NAME_FORMATTING_PLAN.md)
 -   [Project Specification](./SPEC.md)
 -   [README](../README.md)

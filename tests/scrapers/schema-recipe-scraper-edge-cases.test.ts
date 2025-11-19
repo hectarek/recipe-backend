@@ -350,4 +350,195 @@ describe("extractRecipeFromHtml - Edge Cases", () => {
     const result = extractRecipeFromHtml(html, "https://example.com");
     expect(result.recipe.instructions).toBe("Single instruction step");
   });
+
+  it("handles recipeTypeMatches with non-string, non-array @type", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@type": 123,
+        "name": "Not a recipe"
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@type": "Recipe",
+        "name": "Valid Recipe",
+        "recipeIngredient": ["1 cup flour"]
+      }
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    expect(result.recipe.title).toBe("Valid Recipe");
+  });
+
+  it("handles findRecipeNode with array at root level", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      [
+        {
+          "@type": "Article",
+          "name": "Not a recipe"
+        },
+        {
+          "@type": "Recipe",
+          "name": "Array Root Recipe",
+          "recipeIngredient": ["1 cup sugar"]
+        }
+      ]
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    expect(result.recipe.title).toBe("Array Root Recipe");
+  });
+
+  it("handles instructions array with non-object entries", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@type": "Recipe",
+        "name": "Test",
+        "recipeInstructions": [
+          { "@type": "HowToStep", "text": "Step 1" },
+          "String entry",
+          { "@type": "HowToStep", "text": "Step 2" },
+          null,
+          { "@type": "HowToStep", "text": "Step 3" }
+        ]
+      }
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    const steps = result.recipe.instructions.split("\n").filter(Boolean);
+    expect(steps.length).toBeGreaterThanOrEqual(3);
+    expect(steps).toContain("Step 1");
+    expect(steps).toContain("Step 2");
+    expect(steps).toContain("Step 3");
+    // String entries are also included
+    expect(steps).toContain("String entry");
+  });
+
+  it("handles instructions array with object entries missing text", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@type": "Recipe",
+        "name": "Test",
+        "recipeInstructions": [
+          { "@type": "HowToStep", "text": "Step 1" },
+          { "@type": "HowToStep", "name": "No text property" },
+          { "@type": "HowToStep", "text": "Step 2" }
+        ]
+      }
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    const steps = result.recipe.instructions.split("\n").filter(Boolean);
+    expect(steps).toContain("Step 1");
+    expect(steps).toContain("Step 2");
+  });
+
+  it("handles image object with non-string url", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@type": "Recipe",
+        "name": "Test",
+        "image": {
+          "url": 123
+        }
+      }
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    expect(result.recipe.image).toBeUndefined();
+  });
+
+  it("handles image array with mixed types", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@type": "Recipe",
+        "name": "Test",
+        "image": [
+          "https://example.com/img1.jpg",
+          { "url": "https://example.com/img2.jpg" },
+          null,
+          123
+        ]
+      }
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    expect(result.recipe.image).toBe("https://example.com/img1.jpg");
+  });
+
+  it("handles nested @graph with multiple levels", () => {
+    const html = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Article",
+            "name": "Not a recipe"
+          },
+          {
+            "@type": "WebPage",
+            "@graph": [
+              {
+                "@type": "Recipe",
+                "name": "Deeply Nested Recipe",
+                "recipeIngredient": ["1 cup flour"]
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+  </head>
+</html>
+    `;
+
+    const result = extractRecipeFromHtml(html, "https://example.com");
+    expect(result.recipe.title).toBe("Deeply Nested Recipe");
+  });
 });

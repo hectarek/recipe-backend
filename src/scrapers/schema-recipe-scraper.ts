@@ -227,6 +227,44 @@ const normalizeStringArray = (value: unknown): string[] => {
   return Array.from(result);
 };
 
+/**
+ * Cleans HTML entities from ingredient strings
+ */
+const cleanIngredientHtml = (value: string): string => {
+  let cleaned = value.trim();
+
+  // Decode numeric HTML entities first
+  cleaned = cleaned.replace(/&#(\d+);/g, (_, num) => {
+    const code = Number.parseInt(num, 10);
+    return code > 0 && code < 0x10_ff_ff
+      ? String.fromCharCode(code)
+      : `&#${num};`;
+  });
+
+  cleaned = cleaned.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+    const code = Number.parseInt(hex, 16);
+    return code > 0 && code < 0x10_ff_ff
+      ? String.fromCharCode(code)
+      : `&#x${hex};`;
+  });
+
+  // Decode common named HTML entities (order matters - &amp; must be last)
+  const htmlEntities: Record<string, string> = {
+    "&quot;": '"',
+    "&apos;": "'",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&nbsp;": " ",
+    "&amp;": "&", // Must be last
+  };
+
+  for (const [entity, replacement] of Object.entries(htmlEntities)) {
+    cleaned = cleaned.replaceAll(entity, replacement);
+  }
+
+  return cleaned;
+};
+
 const normalizeIngredients = (value: unknown): RawIngredient[] => {
   if (!value) {
     return [];
@@ -234,15 +272,76 @@ const normalizeIngredients = (value: unknown): RawIngredient[] => {
 
   if (Array.isArray(value)) {
     return value
-      .map((entry) => (typeof entry === "string" ? entry.trim() : null))
+      .map((entry) => {
+        if (typeof entry === "string") {
+          return cleanIngredientHtml(entry);
+        }
+        return null;
+      })
       .filter((entry): entry is string => !!entry);
   }
 
   if (typeof value === "string") {
-    return [value.trim()];
+    return [cleanIngredientHtml(value)];
   }
 
   return [];
+};
+
+/**
+ * Normalizes recipe titles by decoding HTML entities and cleaning up whitespace.
+ * Handles common HTML entities like &amp;, &quot;, &lt;, &gt;, &apos;, etc.
+ */
+const normalizeTitle = (value: string): string => {
+  if (!value) {
+    return "";
+  }
+
+  let cleaned = value.trim();
+
+  // Decode numeric HTML entities first (&#123; and &#x1F; formats)
+  // These don't conflict with named entities
+  cleaned = cleaned.replace(/&#(\d+);/g, (_, num) => {
+    const code = Number.parseInt(num, 10);
+    return code > 0 && code < 0x10_ff_ff
+      ? String.fromCharCode(code)
+      : `&#${num};`;
+  });
+
+  cleaned = cleaned.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+    const code = Number.parseInt(hex, 16);
+    return code > 0 && code < 0x10_ff_ff
+      ? String.fromCharCode(code)
+      : `&#x${hex};`;
+  });
+
+  // Decode common named HTML entities
+  // Order matters: &amp; must be decoded last to avoid double-decoding issues
+  const htmlEntities: Record<string, string> = {
+    "&quot;": '"',
+    "&apos;": "'",
+    "&lt;": "<",
+    "&gt;": ">",
+    "&nbsp;": " ",
+    "&copy;": "©",
+    "&reg;": "®",
+    "&trade;": "™",
+    "&hellip;": "…",
+    "&mdash;": "—",
+    "&ndash;": "–",
+    "&amp;": "&", // Must be last
+  };
+
+  // Replace HTML entities (order matters - &amp; should be last)
+  for (const [entity, replacement] of Object.entries(htmlEntities)) {
+    cleaned = cleaned.replaceAll(entity, replacement);
+  }
+
+  // Normalize whitespace: collapse multiple spaces/tabs/newlines to single space
+  cleaned = cleaned.replace(/\s+/g, " ");
+
+  // Trim again after normalization
+  return cleaned.trim();
 };
 
 const buildScrapeResult = (
@@ -259,7 +358,7 @@ const buildScrapeResult = (
   const recipe: ScrapedRecipe = {
     title:
       typeof schema.name === "string"
-        ? (schema.name as string)
+        ? normalizeTitle(schema.name as string)
         : "Untitled recipe",
     sourceUrl,
     image: firstString(schema.image),

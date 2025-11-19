@@ -57,6 +57,18 @@ export const UNIT_ALIASES: Record<string, string> = {
   bunches: "bunch",
   sprig: "sprig",
   sprigs: "sprig",
+  rib: "rib",
+  ribs: "rib",
+  piece: "piece",
+  pieces: "piece",
+  stalk: "stalk",
+  stalks: "stalk",
+  head: "head",
+  heads: "head",
+  bulb: "bulb",
+  bulbs: "bulb",
+  leaf: "leaf",
+  leaves: "leaf",
 };
 
 export const DESCRIPTORS = [

@@ -49,4 +49,85 @@ describe("extractRecipeFromHtml", () => {
       extractRecipeFromHtml("<html></html>", "https://example.com")
     ).toThrow(NO_RECIPE_SCHEMA_REGEX);
   });
+
+  it("decodes HTML entities in recipe titles", () => {
+    const htmlWithEntities = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Recipe",
+        "name": "Healthier Beef &amp; Barley Soup",
+        "recipeIngredient": [],
+        "recipeInstructions": "Cook soup."
+      }
+    </script>
+  </head>
+  <body></body>
+</html>
+`;
+
+    const result = extractRecipeFromHtml(
+      htmlWithEntities,
+      "https://example.com/recipe"
+    );
+
+    expect(result.recipe.title).toBe("Healthier Beef & Barley Soup");
+  });
+
+  it("handles multiple HTML entities and whitespace in titles", () => {
+    const htmlWithMultipleEntities = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Recipe",
+        "name": "Tom &amp; Jerry&apos;s  &nbsp;  Special  &quot;Dish&quot;",
+        "recipeIngredient": [],
+        "recipeInstructions": "Cook."
+      }
+    </script>
+  </head>
+  <body></body>
+</html>
+`;
+
+    const result = extractRecipeFromHtml(
+      htmlWithMultipleEntities,
+      "https://example.com/recipe"
+    );
+
+    expect(result.recipe.title).toBe('Tom & Jerry\'s Special "Dish"');
+  });
+
+  it("handles numeric HTML entities in titles", () => {
+    const htmlWithNumericEntities = `
+<!doctype html>
+<html>
+  <head>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Recipe",
+        "name": "Recipe &#39;Test&#39; &amp; More",
+        "recipeIngredient": [],
+        "recipeInstructions": "Cook."
+      }
+    </script>
+  </head>
+  <body></body>
+</html>
+`;
+
+    const result = extractRecipeFromHtml(
+      htmlWithNumericEntities,
+      "https://example.com/recipe"
+    );
+
+    expect(result.recipe.title).toBe("Recipe 'Test' & More");
+  });
 });

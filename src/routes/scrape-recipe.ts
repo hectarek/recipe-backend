@@ -22,8 +22,11 @@ const requestSchema = z.object({
 const buildNotionClientIfConfigured = (persistToNotion: boolean) => {
   const token = process.env.NOTION_API_TOKEN;
   const recipeDataSource = process.env.NOTION_RECIPES_DATA_SOURCE_ID;
+  const recipeDatabase = process.env.NOTION_RECIPES_DATABASE_ID; // Fallback for empty data sources
   const ingredientDataSource = process.env.NOTION_INGREDIENTS_DATA_SOURCE_ID;
+  const ingredientDatabase = process.env.NOTION_INGREDIENTS_DATABASE_ID; // Fallback for empty data sources
   const foodDataSource = process.env.NOTION_FOOD_DATA_SOURCE_ID;
+  const foodDatabase = process.env.NOTION_FOOD_DATABASE_ID; // Fallback for empty data sources
 
   if (!token) {
     logger.trace(
@@ -49,9 +52,11 @@ const buildNotionClientIfConfigured = (persistToNotion: boolean) => {
   return new NotionClient({
     apiToken: token,
     recipeDataSourceId: recipeDataSource,
+    recipeDatabaseId: recipeDatabase, // Fallback when data source is empty
     ingredientDataSourceId: ingredientDataSource,
+    ingredientDatabaseId: ingredientDatabase, // Fallback when data source is empty
     foodDataSourceId: foodDataSource,
-    // Database IDs will be automatically resolved from data source IDs
+    foodDatabaseId: foodDatabase, // Fallback when data source is empty
   });
 };
 

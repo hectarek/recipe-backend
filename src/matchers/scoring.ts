@@ -18,8 +18,8 @@ const TOKEN_SCORE_LOW = 60;
 const FUZZY_SCORE_WEIGHT = 70;
 const EMBEDDING_MIN_SIMILARITY = 0.6;
 
-export const DEFAULT_HARD_MATCH_THRESHOLD = 85;
-export const DEFAULT_SOFT_MATCH_THRESHOLD = 60;
+export const DEFAULT_HARD_MATCH_THRESHOLD = 90;
+export const DEFAULT_SOFT_MATCH_THRESHOLD = 70;
 
 const parseThreshold = (
   value: string | undefined,
